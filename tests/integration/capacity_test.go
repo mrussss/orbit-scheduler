@@ -118,11 +118,14 @@ func TestFetchEnforcesWorkerAndProjectCapacity(t *testing.T) {
 	if len(replacement) != 1 {
 		t.Fatalf("released project slot claimed=%d, want 1", len(replacement))
 	}
-	var projectRunning int
+	var projectRunning, recordedProjectRunning int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM tasks WHERE project_id=$1 AND status='RUNNING'`, projectID).Scan(&projectRunning); err != nil {
 		t.Fatal(err)
 	}
-	if projectRunning != 3 {
-		t.Fatalf("project running=%d, want 3", projectRunning)
+	if err := pool.QueryRow(ctx, `SELECT running_tasks FROM projects WHERE id=$1`, projectID).Scan(&recordedProjectRunning); err != nil {
+		t.Fatal(err)
+	}
+	if projectRunning != 3 || recordedProjectRunning != projectRunning {
+		t.Fatalf("project running tasks=%d recorded=%d, want 3", projectRunning, recordedProjectRunning)
 	}
 }

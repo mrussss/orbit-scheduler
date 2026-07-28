@@ -20,6 +20,7 @@ type Project struct {
 	Status               ProjectStatus
 	TaskQuota            int64
 	MaxConcurrentTasks   int
+	RunningTasks         int
 	CreatedAt, UpdatedAt time.Time
 }
 type APIToken struct {

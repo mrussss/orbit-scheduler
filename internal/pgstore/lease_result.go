@@ -55,6 +55,7 @@ func (s *Store) RenewLease(ctx context.Context, request scheduler.RenewRequest) 
 }
 
 type taskForReport struct {
+	projectID        uuid.UUID
 	status           domain.TaskStatus
 	attemptNo        int
 	owner            *uuid.UUID
@@ -80,7 +81,7 @@ func (s *Store) ReportResult(ctx context.Context, request scheduler.ReportReques
 	defer func() { _ = tx.Rollback(ctx) }()
 	var task taskForReport
 	var databaseNow time.Time
-	err = tx.QueryRow(ctx, `SELECT status,attempt_no,lease_owner_instance_id,lease_expires_at,cancel_requested_at,max_attempts,overall_deadline,completed_by_worker_instance_id,completed_attempt_no,statement_timestamp() FROM tasks WHERE id=$1 FOR UPDATE`, request.TaskID).Scan(&task.status, &task.attemptNo, &task.owner, &task.leaseExpires, &task.cancelRequested, &task.maxAttempts, &task.overallDeadline, &task.completedBy, &task.completedAttempt, &databaseNow)
+	err = tx.QueryRow(ctx, `SELECT project_id,status,attempt_no,lease_owner_instance_id,lease_expires_at,cancel_requested_at,max_attempts,overall_deadline,completed_by_worker_instance_id,completed_attempt_no,statement_timestamp() FROM tasks WHERE id=$1 FOR UPDATE`, request.TaskID).Scan(&task.projectID, &task.status, &task.attemptNo, &task.owner, &task.leaseExpires, &task.cancelRequested, &task.maxAttempts, &task.overallDeadline, &task.completedBy, &task.completedAttempt, &databaseNow)
 	if err == pgx.ErrNoRows {
 		return scheduler.ReportResult{}, scheduler.ErrNotFound
 	}
@@ -151,6 +152,10 @@ func (s *Store) ReportResult(ctx context.Context, request scheduler.ReportReques
 	_, err = tx.Exec(ctx, `UPDATE worker_instances SET running_tasks=GREATEST(running_tasks-1,0),updated_at=statement_timestamp() WHERE id=$1`, request.WorkerInstanceID)
 	if err != nil {
 		return scheduler.ReportResult{}, fmt.Errorf("release worker capacity: %w", err)
+	}
+	_, err = tx.Exec(ctx, `UPDATE projects SET running_tasks=GREATEST(running_tasks-1,0),updated_at=statement_timestamp() WHERE id=$1`, task.projectID)
+	if err != nil {
+		return scheduler.ReportResult{}, fmt.Errorf("release project capacity: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return scheduler.ReportResult{}, fmt.Errorf("report result commit: %w", err)

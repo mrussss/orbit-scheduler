@@ -12,60 +12,15 @@ import (
 )
 
 const fetchTasksSQL = `
-WITH locked_projects AS MATERIALIZED (
-    SELECT p.id, p.max_concurrent_tasks
-    FROM projects p
-    JOIN LATERAL (
-        SELECT t.priority, t.available_at, t.id
-        FROM tasks t
-        WHERE t.project_id = p.id
-          AND t.status = 'PENDING'
-          AND t.available_at <= statement_timestamp()
-          AND (t.overall_deadline IS NULL OR t.overall_deadline > statement_timestamp())
-          AND t.task_type = ANY($1::text[])
-        ORDER BY t.priority DESC, t.available_at ASC, t.id ASC
-        LIMIT 1
-    ) next_task ON true
-    WHERE p.status = 'ACTIVE'
-      AND (
-          SELECT count(*)
-          FROM tasks running
-          WHERE running.project_id = p.id AND running.status = 'RUNNING'
-      ) < p.max_concurrent_tasks
-    ORDER BY next_task.priority DESC, next_task.available_at ASC, next_task.id ASC
-    FOR UPDATE OF p SKIP LOCKED
-    LIMIT $2
-),
-project_capacity AS MATERIALIZED (
-    SELECT p.id,
-           GREATEST(p.max_concurrent_tasks - (
-               SELECT count(*)::integer
-               FROM tasks running
-               WHERE running.project_id = p.id AND running.status = 'RUNNING'
-           ), 0) AS slots
-    FROM locked_projects p
-),
-ranked_tasks AS MATERIALIZED (
-    SELECT t.id, t.project_id, t.priority, t.available_at,
-           row_number() OVER (
-               PARTITION BY t.project_id
-               ORDER BY t.priority DESC, t.available_at ASC, t.id ASC
-           ) AS project_rank
+WITH candidates AS (
+    SELECT t.id
     FROM tasks t
-    JOIN project_capacity capacity ON capacity.id = t.project_id
     WHERE t.status = 'PENDING'
+      AND t.project_id = $5
       AND t.available_at <= statement_timestamp()
       AND (t.overall_deadline IS NULL OR t.overall_deadline > statement_timestamp())
       AND t.task_type = ANY($1::text[])
-),
-candidates AS (
-    SELECT t.id
-    FROM tasks t
-    JOIN ranked_tasks ranked ON ranked.id = t.id
-    JOIN project_capacity capacity ON capacity.id = ranked.project_id
-    WHERE ranked.project_rank <= capacity.slots
-      AND t.status = 'PENDING'
-    ORDER BY ranked.priority DESC, ranked.available_at ASC, ranked.id ASC
+    ORDER BY t.priority DESC, t.available_at ASC, t.id ASC
     FOR UPDATE OF t SKIP LOCKED
     LIMIT $2
 )
@@ -92,6 +47,48 @@ func (s *Store) FetchTasks(ctx context.Context, request scheduler.FetchRequest) 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	var advertisedTaskTypes []string
+	err = tx.QueryRow(ctx, `SELECT supported_task_types FROM worker_instances WHERE id=$1`, request.WorkerInstanceID).Scan(&advertisedTaskTypes)
+	if err == pgx.ErrNoRows {
+		return nil, scheduler.ErrWorkerNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read fetch worker types: %w", err)
+	}
+
+	var projectID uuid.UUID
+	var projectCapacity, projectRunning int
+	projectQuery := `
+        SELECT p.id,p.max_concurrent_tasks,p.running_tasks
+        FROM projects p
+        JOIN LATERAL (
+            SELECT t.priority,t.available_at,t.id
+            FROM tasks t
+            WHERE t.project_id=p.id AND t.status='PENDING'
+              AND t.available_at<=statement_timestamp()
+              AND (t.overall_deadline IS NULL OR t.overall_deadline>statement_timestamp())
+		      AND t.task_type=ANY($1::text[])
+            ORDER BY t.priority DESC,t.available_at,t.id
+            LIMIT 1
+        ) candidate ON true
+        WHERE p.status='ACTIVE' AND p.running_tasks<p.max_concurrent_tasks
+        ORDER BY candidate.priority DESC,candidate.available_at,candidate.id
+        FOR UPDATE OF p %s
+        LIMIT 1`
+	err = tx.QueryRow(ctx, fmt.Sprintf(projectQuery, "SKIP LOCKED"), advertisedTaskTypes).Scan(&projectID, &projectCapacity, &projectRunning)
+	if err == pgx.ErrNoRows {
+		err = tx.QueryRow(ctx, fmt.Sprintf(projectQuery, ""), advertisedTaskTypes).Scan(&projectID, &projectCapacity, &projectRunning)
+	}
+	if err == pgx.ErrNoRows {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("fetch no project commit: %w", err)
+		}
+		return []scheduler.Assignment{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("lock fetch project: %w", err)
+	}
+
 	var workerName string
 	var capacity, running int
 	var draining bool
@@ -106,7 +103,7 @@ func (s *Store) FetchTasks(ctx context.Context, request scheduler.FetchRequest) 
 	if draining {
 		return nil, scheduler.ErrWorkerDraining
 	}
-	limit := min(request.Requested, capacity-running, s.cfg.MaxFetchBatch)
+	limit := min(request.Requested, capacity-running, projectCapacity-projectRunning, s.cfg.MaxFetchBatch)
 	if limit <= 0 || len(taskTypes) == 0 {
 		if err := tx.Commit(ctx); err != nil {
 			return nil, fmt.Errorf("fetch empty commit: %w", err)
@@ -114,7 +111,7 @@ func (s *Store) FetchTasks(ctx context.Context, request scheduler.FetchRequest) 
 		return []scheduler.Assignment{}, nil
 	}
 
-	rows, err := tx.Query(ctx, fetchTasksSQL, taskTypes, limit, request.WorkerInstanceID, request.LeaseDuration.Milliseconds())
+	rows, err := tx.Query(ctx, fetchTasksSQL, taskTypes, limit, request.WorkerInstanceID, request.LeaseDuration.Milliseconds(), projectID)
 	if err != nil {
 		return nil, fmt.Errorf("fetch candidates: %w", err)
 	}
@@ -158,6 +155,9 @@ func (s *Store) FetchTasks(ctx context.Context, request scheduler.FetchRequest) 
 		}
 		if _, err := tx.Exec(ctx, `UPDATE worker_instances SET running_tasks=running_tasks+$2, updated_at=statement_timestamp() WHERE id=$1`, request.WorkerInstanceID, len(assignments)); err != nil {
 			return nil, fmt.Errorf("update worker running count: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE projects SET running_tasks=running_tasks+$2,updated_at=statement_timestamp() WHERE id=$1`, projectID, len(assignments)); err != nil {
+			return nil, fmt.Errorf("update project running count: %w", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

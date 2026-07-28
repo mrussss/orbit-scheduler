@@ -14,6 +14,7 @@ import (
 
 type expiredTask struct {
 	id              uuid.UUID
+	projectID       uuid.UUID
 	attemptNo       int
 	owner           uuid.UUID
 	cancelRequested *time.Time
@@ -30,14 +31,14 @@ func (s *Store) ReapExpired(ctx context.Context, batchSize int) (scheduler.ReapR
 		return scheduler.ReapResult{}, fmt.Errorf("reaper begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	rows, err := tx.Query(ctx, `SELECT id,attempt_no,lease_owner_instance_id,cancel_requested_at,max_attempts,overall_deadline FROM tasks WHERE status='RUNNING' AND lease_expires_at<=statement_timestamp() ORDER BY lease_expires_at,id FOR UPDATE SKIP LOCKED LIMIT $1`, batchSize)
+	rows, err := tx.Query(ctx, `SELECT id,project_id,attempt_no,lease_owner_instance_id,cancel_requested_at,max_attempts,overall_deadline FROM tasks WHERE status='RUNNING' AND lease_expires_at<=statement_timestamp() ORDER BY lease_expires_at,id FOR UPDATE SKIP LOCKED LIMIT $1`, batchSize)
 	if err != nil {
 		return scheduler.ReapResult{}, fmt.Errorf("select expired tasks: %w", err)
 	}
 	candidates := make([]expiredTask, 0, batchSize)
 	for rows.Next() {
 		var task expiredTask
-		if err := rows.Scan(&task.id, &task.attemptNo, &task.owner, &task.cancelRequested, &task.maxAttempts, &task.deadline); err != nil {
+		if err := rows.Scan(&task.id, &task.projectID, &task.attemptNo, &task.owner, &task.cancelRequested, &task.maxAttempts, &task.deadline); err != nil {
 			rows.Close()
 			return scheduler.ReapResult{}, fmt.Errorf("scan expired task: %w", err)
 		}
@@ -103,6 +104,10 @@ func (s *Store) ReapExpired(ctx context.Context, batchSize int) (scheduler.ReapR
 		_, err = tx.Exec(ctx, `UPDATE worker_instances SET running_tasks=GREATEST(running_tasks-1,0),updated_at=statement_timestamp() WHERE id=$1`, task.owner)
 		if err != nil {
 			return scheduler.ReapResult{}, fmt.Errorf("release expired worker capacity: %w", err)
+		}
+		_, err = tx.Exec(ctx, `UPDATE projects SET running_tasks=GREATEST(running_tasks-1,0),updated_at=statement_timestamp() WHERE id=$1`, task.projectID)
+		if err != nil {
+			return scheduler.ReapResult{}, fmt.Errorf("release expired project capacity: %w", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {

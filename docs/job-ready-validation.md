@@ -21,7 +21,7 @@ attempts=1
 workers=2
 ```
 
-The run started PostgreSQL 16 from an empty database, applied migrations 1–9,
+The run started PostgreSQL 16 from an empty database, applied migrations 1–10,
 started the HTTP/gRPC server and two independent Worker processes, created the
 Project, Token, and Task through authenticated HTTP APIs, then read the final
 Result and Attempt through HTTP. The Mock task ran for 700 ms with a 500 ms

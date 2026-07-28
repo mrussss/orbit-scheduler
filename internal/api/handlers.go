@@ -101,7 +101,7 @@ func (h *handlers) updateProject(c *gin.Context) {
 	c.JSON(http.StatusOK, projectView(project))
 }
 func projectView(p domain.Project) gin.H {
-	return gin.H{"id": p.ID, "name": p.Name, "status": p.Status, "task_quota": p.TaskQuota, "max_concurrent_tasks": p.MaxConcurrentTasks, "created_at": p.CreatedAt.UTC(), "updated_at": p.UpdatedAt.UTC()}
+	return gin.H{"id": p.ID, "name": p.Name, "status": p.Status, "task_quota": p.TaskQuota, "max_concurrent_tasks": p.MaxConcurrentTasks, "running_tasks": p.RunningTasks, "created_at": p.CreatedAt.UTC(), "updated_at": p.UpdatedAt.UTC()}
 }
 
 type createTokenRequest struct {
