@@ -17,6 +17,7 @@ type Config struct {
 	MetricsAddr  string
 	DatabaseURL  string
 	TokenPepper  string
+	AdminToken   string
 	KafkaBrokers []string
 	TaskTopic    string
 	TaskDLQTopic string
@@ -65,6 +66,7 @@ func Load() (Config, error) {
 		MetricsAddr:  env("METRICS_ADDR", ":9091"),
 		DatabaseURL:  os.Getenv("DATABASE_URL"),
 		TokenPepper:  os.Getenv("TOKEN_PEPPER"),
+		AdminToken:   os.Getenv("ADMIN_TOKEN"),
 		KafkaBrokers: split(env("KAFKA_BROKERS", "localhost:9092")),
 		TaskTopic:    env("KAFKA_TASK_EVENTS_TOPIC", "orbit.task-events.v1"),
 		TaskDLQTopic: env("KAFKA_TASK_EVENTS_DLQ_TOPIC", "orbit.task-events.dlq.v1"),
@@ -130,6 +132,9 @@ func (c Config) Validate() error {
 	}
 	if len(c.TokenPepper) < 32 {
 		errs = append(errs, errors.New("TOKEN_PEPPER must contain at least 32 characters"))
+	}
+	if len(c.AdminToken) < 32 {
+		errs = append(errs, errors.New("ADMIN_TOKEN must contain at least 32 characters"))
 	}
 	if c.GORM.MaxOpen <= 0 || c.GORM.MaxIdle < 0 || c.GORM.MaxIdle > c.GORM.MaxOpen {
 		errs = append(errs, errors.New("invalid GORM connection pool limits"))
