@@ -1,13 +1,11 @@
 package pgstore
 
 import (
-	"context"
 	"errors"
 	"math/rand"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/mrussss/orbit-scheduler/internal/scheduler"
 )
 
 type Config struct {
@@ -33,8 +31,4 @@ func New(pool *pgxpool.Pool, cfg Config) (*Store, error) {
 		return nil, errors.New("invalid retry backoff")
 	}
 	return &Store{pool: pool, cfg: cfg, random: rand.New(rand.NewSource(time.Now().UnixNano()))}, nil
-}
-
-func (s *Store) FetchTasks(context.Context, scheduler.FetchRequest) ([]scheduler.Assignment, error) {
-	return nil, errors.New("TODO: atomic task fetch")
 }

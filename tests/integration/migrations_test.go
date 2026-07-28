@@ -20,8 +20,30 @@ import (
 )
 
 func TestMigrationsFromEmptyDatabase(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
+	ctx := context.Background()
+	dsn := migratedPostgres(t)
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	var count int
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexname IN ('tasks_scheduler_candidates_idx','tasks_expired_lease_idx','outbox_unpublished_idx')`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Fatalf("expected core indexes, got %d", count)
+	}
+	_, err = conn.Exec(ctx, `INSERT INTO projects(id,name,status,task_quota,max_concurrent_tasks,created_at,updated_at) VALUES(gen_random_uuid(),'bad','UNKNOWN',0,1,now(),now())`)
+	if err == nil {
+		t.Fatal("project status constraint accepted invalid value")
+	}
+}
+
+func migratedPostgres(t *testing.T) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	t.Cleanup(cancel)
 	container, err := tcpostgres.Run(ctx, "postgres:16-alpine",
 		tcpostgres.WithDatabase("orbit"), tcpostgres.WithUsername("orbit"), tcpostgres.WithPassword("orbit"),
 		testcontainers.WithWaitStrategy(wait.ForLog("database system is ready to accept connections").WithOccurrence(2).WithStartupTimeout(time.Minute)),
@@ -46,20 +68,5 @@ func TestMigrationsFromEmptyDatabase(t *testing.T) {
 	if err := m.Up(); err != nil {
 		t.Fatal(err)
 	}
-	conn, err := pgx.Connect(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close(ctx)
-	var count int
-	if err := conn.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexname IN ('tasks_scheduler_candidates_idx','tasks_expired_lease_idx','outbox_unpublished_idx')`).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != 3 {
-		t.Fatalf("expected core indexes, got %d", count)
-	}
-	_, err = conn.Exec(ctx, `INSERT INTO projects(id,name,status,task_quota,max_concurrent_tasks,created_at,updated_at) VALUES(gen_random_uuid(),'bad','UNKNOWN',0,1,now(),now())`)
-	if err == nil {
-		t.Fatal("project status constraint accepted invalid value")
-	}
+	return dsn
 }
