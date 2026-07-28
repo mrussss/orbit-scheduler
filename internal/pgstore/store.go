@@ -3,6 +3,7 @@ package pgstore
 import (
 	"errors"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,9 +16,10 @@ type Config struct {
 }
 
 type Store struct {
-	pool   *pgxpool.Pool
-	cfg    Config
-	random *rand.Rand
+	pool     *pgxpool.Pool
+	cfg      Config
+	random   *rand.Rand
+	randomMu sync.Mutex
 }
 
 func New(pool *pgxpool.Pool, cfg Config) (*Store, error) {

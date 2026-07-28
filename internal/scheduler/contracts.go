@@ -11,12 +11,14 @@ import (
 )
 
 var (
-	ErrWorkerNotFound = errors.New("worker instance not found")
-	ErrWorkerDraining = errors.New("worker is draining")
-	ErrStaleLease     = errors.New("stale or expired lease")
-	ErrConflict       = errors.New("conflicting result")
-	ErrNotFound       = errors.New("task not found")
-	ErrInvalidOutcome = errors.New("invalid outcome")
+	ErrWorkerNotFound   = errors.New("worker instance not found")
+	ErrWorkerDraining   = errors.New("worker is draining")
+	ErrStaleLease       = errors.New("stale or expired lease")
+	ErrCancelRequested  = errors.New("task cancellation requested")
+	ErrAlreadyFinalized = errors.New("task already finalized")
+	ErrConflict         = errors.New("conflicting result")
+	ErrNotFound         = errors.New("task not found")
+	ErrInvalidOutcome   = errors.New("invalid outcome")
 )
 
 type FetchRequest struct {

@@ -4,6 +4,7 @@ package integration_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/mrussss/orbit-scheduler/internal/domain"
 	"github.com/mrussss/orbit-scheduler/internal/pgstore"
 	"github.com/mrussss/orbit-scheduler/internal/scheduler"
 )
@@ -91,6 +93,35 @@ func TestAtomicFetchSkipsLocksAndRollsBackSideEffectFailure(t *testing.T) {
 	}
 	if running != 100 || attempts != 100 || events != 100 {
 		t.Fatalf("running=%d attempts=%d events=%d", running, attempts, events)
+	}
+
+	var resultTask, resultWorker uuid.UUID
+	var resultAttempt int
+	if err := pool.QueryRow(ctx, `SELECT id,lease_owner_instance_id,attempt_no FROM tasks WHERE status='RUNNING' ORDER BY id LIMIT 1`).Scan(&resultTask, &resultWorker, &resultAttempt); err != nil {
+		t.Fatal(err)
+	}
+	renewed, err := store.RenewLease(ctx, scheduler.RenewRequest{TaskID: resultTask, WorkerInstanceID: resultWorker, AttemptNo: resultAttempt, Extension: time.Minute})
+	if err != nil || renewed.LeaseExpiresAt.Before(time.Now()) {
+		t.Fatalf("renew result=%+v err=%v", renewed, err)
+	}
+	if _, err := store.RenewLease(ctx, scheduler.RenewRequest{TaskID: resultTask, WorkerInstanceID: uuid.New(), AttemptNo: resultAttempt, Extension: time.Minute}); !errors.Is(err, scheduler.ErrStaleLease) {
+		t.Fatalf("wrong worker renew err=%v", err)
+	}
+	started, finished := time.Now().Add(-time.Second), time.Now()
+	result := []byte(`{"ok":true}`)
+	hash := domain.HashBytes(result)
+	report := scheduler.ReportRequest{TaskID: resultTask, WorkerInstanceID: resultWorker, AttemptNo: resultAttempt, Outcome: domain.OutcomeSucceeded, Result: result, ResultHash: hash, ExecutionStartedAt: started, ExecutionFinishedAt: finished}
+	firstReport, err := store.ReportResult(ctx, report)
+	if err != nil || firstReport.Status != domain.TaskSucceeded || firstReport.Idempotent {
+		t.Fatalf("first report=%+v err=%v", firstReport, err)
+	}
+	repeated, err := store.ReportResult(ctx, report)
+	if err != nil || !repeated.Idempotent || repeated.Status != domain.TaskSucceeded {
+		t.Fatalf("repeated report=%+v err=%v", repeated, err)
+	}
+	report.ResultHash = domain.HashBytes([]byte(`{"ok":false}`))
+	if _, err := store.ReportResult(ctx, report); !errors.Is(err, scheduler.ErrConflict) {
+		t.Fatalf("conflicting report err=%v", err)
 	}
 
 	rollbackTask, rollbackWorker := uuid.New(), uuid.New()
