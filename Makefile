@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-integration lint fmt compose-up compose-down migrate-up migrate-down run-server
+.PHONY: build test test-race test-integration lint fmt proto compose-up compose-down migrate-up migrate-down run-server
 
 GO ?= go
 COMPOSE := docker compose -f deploy/docker-compose.yml
@@ -21,6 +21,10 @@ lint:
 
 fmt:
 	$(GO)fmt -w .
+
+proto:
+	mkdir -p gen
+	PATH=$(CURDIR)/bin:$$PATH ./bin/protoc -I proto --go_out=gen --go_opt=paths=source_relative --go-grpc_out=gen --go-grpc_opt=paths=source_relative proto/orbit/worker/v1/worker.proto
 
 compose-up:
 	$(COMPOSE) up -d postgres kafka prometheus

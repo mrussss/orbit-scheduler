@@ -1,0 +1,138 @@
+package worker
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/mrussss/orbit-scheduler/internal/executor"
+	"github.com/mrussss/orbit-scheduler/internal/scheduler"
+)
+
+type Config struct {
+	Registration                                                                                 Registration
+	LeaseDuration, RenewInterval, FetchInterval, HeartbeatInterval, RPCDeadline, ReportRetryBase time.Duration
+	ReportRetries                                                                                int
+}
+type Runtime struct {
+	client    Client
+	executors *executor.Registry
+	logger    *slog.Logger
+	cfg       Config
+	root      context.Context
+	cancel    context.CancelFunc
+	draining  atomic.Bool
+	started   time.Time
+	sem       chan struct{}
+	wg        sync.WaitGroup
+	loops     sync.WaitGroup
+	mu        sync.Mutex
+	tasks     map[uuid.UUID]context.CancelFunc
+}
+
+func NewRuntime(client Client, executors *executor.Registry, logger *slog.Logger, cfg Config) (*Runtime, error) {
+	if client == nil || executors == nil || logger == nil {
+		return nil, errors.New("worker runtime dependencies are required")
+	}
+	if cfg.Registration.InstanceID == uuid.Nil || cfg.Registration.Capacity <= 0 || cfg.LeaseDuration <= 0 || cfg.RenewInterval <= 0 || cfg.RenewInterval >= cfg.LeaseDuration || cfg.FetchInterval <= 0 || cfg.HeartbeatInterval <= 0 || cfg.RPCDeadline <= 0 || cfg.ReportRetries < 0 {
+		return nil, errors.New("invalid worker runtime configuration")
+	}
+	return &Runtime{client: client, executors: executors, logger: logger, cfg: cfg, sem: make(chan struct{}, cfg.Registration.Capacity), tasks: map[uuid.UUID]context.CancelFunc{}}, nil
+}
+func (r *Runtime) Start(ctx context.Context) error {
+	r.root, r.cancel = context.WithCancel(ctx)
+	rpcCtx, cancel := context.WithTimeout(r.root, r.cfg.RPCDeadline)
+	err := r.client.Register(rpcCtx, r.cfg.Registration)
+	cancel()
+	if err != nil {
+		return err
+	}
+	r.started = time.Now()
+	r.loops.Add(2)
+	go r.fetchLoop()
+	go r.heartbeatLoop()
+	return nil
+}
+func (r *Runtime) fetchLoop() {
+	defer r.loops.Done()
+	ticker := time.NewTicker(r.cfg.FetchInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.root.Done():
+			return
+		case <-ticker.C:
+			if r.draining.Load() {
+				continue
+			}
+			available := cap(r.sem) - len(r.sem)
+			if available <= 0 {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(r.root, r.cfg.RPCDeadline)
+			assignments, err := r.client.Fetch(ctx, scheduler.FetchRequest{WorkerInstanceID: r.cfg.Registration.InstanceID, Requested: available, LeaseDuration: r.cfg.LeaseDuration})
+			cancel()
+			if err != nil {
+				r.logger.Warn("fetch tasks failed", "error", err)
+				continue
+			}
+			for _, task := range assignments {
+				r.startTask(task)
+			}
+		}
+	}
+}
+func (r *Runtime) heartbeatLoop() {
+	defer r.loops.Done()
+	ticker := time.NewTicker(r.cfg.HeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.root.Done():
+			return
+		case <-ticker.C:
+			r.mu.Lock()
+			running := len(r.tasks)
+			r.mu.Unlock()
+			ctx, cancel := context.WithTimeout(r.root, r.cfg.RPCDeadline)
+			err := r.client.Heartbeat(ctx, Heartbeat{InstanceID: r.cfg.Registration.InstanceID, Running: running, Available: r.cfg.Registration.Capacity - running, Draining: r.draining.Load(), Uptime: time.Since(r.started)})
+			cancel()
+			if err != nil {
+				r.logger.Warn("heartbeat failed", "error", err)
+			}
+		}
+	}
+}
+func (r *Runtime) startTask(task scheduler.Assignment) {
+	r.mu.Lock()
+	if _, exists := r.tasks[task.TaskID]; exists {
+		r.mu.Unlock()
+		return
+	}
+	taskCtx, cancel := context.WithCancel(r.root)
+	r.tasks[task.TaskID] = cancel
+	r.mu.Unlock()
+	r.sem <- struct{}{}
+	r.wg.Add(1)
+	go r.runTask(taskCtx, task)
+}
+func (r *Runtime) runTask(context.Context, scheduler.Assignment) {
+	defer r.finishTask(uuid.Nil) /* TODO: Fetch -> Execute -> Renew -> Report reference implementation */
+}
+func (r *Runtime) finishTask(taskID uuid.UUID) {
+	r.mu.Lock()
+	if cancel, ok := r.tasks[taskID]; ok {
+		cancel()
+		delete(r.tasks, taskID)
+	}
+	r.mu.Unlock()
+	select {
+	case <-r.sem:
+	default:
+	}
+	r.wg.Done()
+}
