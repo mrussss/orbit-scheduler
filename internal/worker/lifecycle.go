@@ -19,11 +19,11 @@ func (r *Runtime) State() State { return State(r.state.Load()) }
 func (r *Runtime) GracefulShutdown(ctx context.Context) error {
 	state := r.State()
 	if state == StateStopped {
-		return nil
+		return r.closeClient()
 	}
 	if state == StateInitialized {
 		r.state.Store(int32(StateStopped))
-		return r.client.Close()
+		return r.closeClient()
 	}
 	r.state.Store(int32(StateDraining))
 	r.draining.Store(true)
@@ -56,7 +56,7 @@ func (r *Runtime) GracefulShutdown(ctx context.Context) error {
 	}
 	r.loops.Wait()
 	r.state.Store(int32(StateStopped))
-	return r.client.Close()
+	return r.closeClient()
 }
 func (r *Runtime) cancelTasks() {
 	r.mu.Lock()

@@ -36,6 +36,7 @@ type Assignment struct {
 	Payload          json.RawMessage
 	AttemptNo        int
 	LeaseExpiresAt   time.Time
+	LocalLeaseUntil  time.Time
 	ExecutionTimeout time.Duration
 	OverallDeadline  *time.Time
 	TraceID          string

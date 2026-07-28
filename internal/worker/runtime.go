@@ -38,6 +38,8 @@ type Runtime struct {
 	drainCh   chan struct{}
 	fetchDone chan struct{}
 	drainOnce sync.Once
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func NewRuntime(client Client, executors *executor.Registry, logger *slog.Logger, cfg Config) (*Runtime, error) {
@@ -88,6 +90,7 @@ func (r *Runtime) fetchLoop() {
 			if available <= 0 {
 				continue
 			}
+			fetchStarted := time.Now()
 			ctx, cancel := context.WithTimeout(r.root, r.cfg.RPCDeadline)
 			assignments, err := r.client.Fetch(ctx, scheduler.FetchRequest{WorkerInstanceID: r.cfg.Registration.InstanceID, Requested: available, LeaseDuration: r.cfg.LeaseDuration})
 			cancel()
@@ -96,6 +99,10 @@ func (r *Runtime) fetchLoop() {
 				continue
 			}
 			for _, task := range assignments {
+				// The database lease starts after the RPC begins. Using the local RPC
+				// start plus the requested duration is deliberately conservative and
+				// avoids comparing the worker clock with the database clock.
+				task.LocalLeaseUntil = fetchStarted.Add(r.cfg.LeaseDuration)
 				r.startTask(task)
 			}
 		}
@@ -144,7 +151,8 @@ func (r *Runtime) runTask(taskCtx context.Context, task scheduler.Assignment) {
 		r.reportWithRetry(taskCtx, task, result)
 		return
 	}
-	deadline := time.Now().Add(task.ExecutionTimeout)
+	executionStartedAt := time.Now().UTC()
+	deadline := executionStartedAt.Add(task.ExecutionTimeout)
 	if task.OverallDeadline != nil && task.OverallDeadline.Before(deadline) {
 		deadline = *task.OverallDeadline
 	}
@@ -163,16 +171,17 @@ func (r *Runtime) runTask(taskCtx context.Context, task scheduler.Assignment) {
 	var result executor.Result
 	select {
 	case result = <-resultCh:
+		result.StartedAt = executionStartedAt
+		result.FinishedAt = time.Now().UTC()
 	case <-executionCtx.Done():
-		started := time.Now().UTC()
 		select {
 		case <-cancelRequested:
-			result = failureResult(started, domain.OutcomeCanceled, domain.ErrorCanceled, "task cancellation requested")
+			result = failureResult(executionStartedAt, domain.OutcomeCanceled, domain.ErrorCanceled, "task cancellation requested")
 		default:
 			if errors.Is(executionCtx.Err(), context.DeadlineExceeded) {
-				result = failureResult(started, domain.OutcomeTimeout, domain.ErrorTimeout, "execution deadline exceeded")
+				result = failureResult(executionStartedAt, domain.OutcomeTimeout, domain.ErrorTimeout, "execution deadline exceeded")
 			} else {
-				result = failureResult(started, domain.OutcomeCanceled, domain.ErrorCanceled, "worker shutting down")
+				result = failureResult(executionStartedAt, domain.OutcomeCanceled, domain.ErrorCanceled, "worker shutting down")
 			}
 		}
 	}
@@ -195,17 +204,24 @@ func (r *Runtime) runTask(taskCtx context.Context, task scheduler.Assignment) {
 func (r *Runtime) renewLoop(ctx context.Context, task scheduler.Assignment, cancelExecution context.CancelFunc, lost chan<- error, cancelRequested chan<- struct{}) {
 	ticker := time.NewTicker(r.cfg.RenewInterval)
 	defer ticker.Stop()
-	expiresAt := task.LeaseExpiresAt
+	leaseValidUntil := task.LocalLeaseUntil
+	if leaseValidUntil.IsZero() {
+		leaseValidUntil = time.Now().Add(r.cfg.LeaseDuration)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			renewStarted := time.Now()
 			rpcCtx, cancel := context.WithTimeout(ctx, r.cfg.RPCDeadline)
 			result, err := r.client.Renew(rpcCtx, scheduler.RenewRequest{TaskID: task.TaskID, WorkerInstanceID: r.cfg.Registration.InstanceID, AttemptNo: task.AttemptNo, Extension: r.cfg.LeaseDuration})
 			cancel()
 			if err == nil {
-				expiresAt = result.LeaseExpiresAt
+				// RenewLease sets the database expiry to server-now plus the
+				// requested extension. Anchoring it to the local RPC start expires
+				// slightly early under latency, never late because of clock skew.
+				leaseValidUntil = renewStarted.Add(r.cfg.LeaseDuration)
 				if result.CancelRequested {
 					select {
 					case cancelRequested <- struct{}{}:
@@ -216,7 +232,7 @@ func (r *Runtime) renewLoop(ctx context.Context, task scheduler.Assignment, canc
 				}
 				continue
 			}
-			if errors.Is(err, scheduler.ErrStaleLease) || errors.Is(err, scheduler.ErrAlreadyFinalized) || !time.Now().Before(expiresAt) {
+			if errors.Is(err, scheduler.ErrStaleLease) || errors.Is(err, scheduler.ErrAlreadyFinalized) || !time.Now().Before(leaseValidUntil) {
 				select {
 				case lost <- err:
 				default:
@@ -299,11 +315,11 @@ func (r *Runtime) SetDraining(ctx context.Context, draining bool) error {
 func (r *Runtime) Running() int { r.mu.Lock(); defer r.mu.Unlock(); return len(r.tasks) }
 func (r *Runtime) StopNow(ctx context.Context) error {
 	if r.State() == StateStopped {
-		return nil
+		return r.closeClient()
 	}
 	if r.State() == StateInitialized {
 		r.state.Store(int32(StateStopped))
-		return r.client.Close()
+		return r.closeClient()
 	}
 	r.draining.Store(true)
 	r.drainOnce.Do(func() { close(r.drainCh) })
@@ -316,8 +332,14 @@ func (r *Runtime) StopNow(ctx context.Context) error {
 	select {
 	case <-done:
 		r.state.Store(int32(StateStopped))
-		return nil
+		return r.closeClient()
 	case <-ctx.Done():
-		return ctx.Err()
+		r.state.Store(int32(StateStopping))
+		return errors.Join(ctx.Err(), r.closeClient())
 	}
+}
+
+func (r *Runtime) closeClient() error {
+	r.closeOnce.Do(func() { r.closeErr = r.client.Close() })
+	return r.closeErr
 }

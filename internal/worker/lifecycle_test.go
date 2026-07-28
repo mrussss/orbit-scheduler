@@ -35,6 +35,9 @@ func TestStopNowBeforeStart(t *testing.T) {
 	if runtime.State() != StateStopped {
 		t.Fatalf("state=%v", runtime.State())
 	}
+	if client.closeCount() != 1 {
+		t.Fatalf("client close count=%d", client.closeCount())
+	}
 }
 
 type ignoringExecutor struct{}

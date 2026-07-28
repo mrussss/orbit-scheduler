@@ -21,6 +21,7 @@ type fakeClient struct {
 	tasks    []scheduler.Assignment
 	reports  chan scheduler.ReportRequest
 	renewErr error
+	closed   int
 }
 
 func (f *fakeClient) Register(context.Context, Registration) error { return nil }
@@ -41,7 +42,17 @@ func (f *fakeClient) Report(_ context.Context, request scheduler.ReportRequest) 
 	return scheduler.ReportResult{Status: domain.TaskSucceeded}, nil
 }
 func (f *fakeClient) SetDraining(context.Context, uuid.UUID, bool) error { return nil }
-func (f *fakeClient) Close() error                                       { return nil }
+func (f *fakeClient) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed++
+	return nil
+}
+func (f *fakeClient) closeCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
+}
 
 type blockingExecutor struct {
 	current, max atomic.Int32
@@ -110,6 +121,9 @@ func TestRuntimeBoundsConcurrencyAndReports(t *testing.T) {
 	if runtime.Running() != 0 {
 		t.Fatalf("running=%d", runtime.Running())
 	}
+	if client.closeCount() != 1 {
+		t.Fatalf("client close count=%d", client.closeCount())
+	}
 }
 
 func TestRuntimeEnforcesExecutionTimeout(t *testing.T) {
@@ -131,6 +145,9 @@ func TestRuntimeEnforcesExecutionTimeout(t *testing.T) {
 	case report := <-client.reports:
 		if report.Outcome != domain.OutcomeTimeout {
 			t.Fatalf("outcome=%s", report.Outcome)
+		}
+		if elapsed := report.ExecutionFinishedAt.Sub(report.ExecutionStartedAt); elapsed < 8*time.Millisecond {
+			t.Fatalf("timeout duration=%s, want actual execution time", elapsed)
 		}
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("execution timeout did not report")

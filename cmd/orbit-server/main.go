@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -21,6 +23,7 @@ import (
 	"github.com/mrussss/orbit-scheduler/internal/platform"
 	"github.com/mrussss/orbit-scheduler/internal/scheduler"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 )
 
@@ -40,9 +43,9 @@ func run() error {
 		return err
 	}
 	slog.SetDefault(logger)
-	ctx, stop := platform.SignalContext()
+	signalCtx, stop := platform.SignalContext()
 	defer stop()
-	connectCtx, cancelConnect := context.WithTimeout(ctx, 10*time.Second)
+	connectCtx, cancelConnect := context.WithTimeout(signalCtx, 10*time.Second)
 	db, err := database.OpenPostgreSQL(connectCtx, cfg)
 	cancelConnect()
 	if err != nil {
@@ -65,44 +68,43 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	go service.RunTokenTouches(ctx)
-	go runReaper(ctx, logger, schedulerStore)
 	workerService, err := grpcservice.New(schedulerStore)
 	if err != nil {
 		return err
 	}
-	if err := serveGRPC(ctx, logger, cfg.GRPCAddr, workerService); err != nil {
-		return err
-	}
 	logger.Info("starting orbit-server", "http_addr", cfg.HTTPAddr, "grpc_addr", cfg.GRPCAddr)
 	metrics := &http.Server{Addr: cfg.MetricsAddr, Handler: promhttp.Handler(), ReadHeaderTimeout: 5 * time.Second}
-	go func() {
-		if err := platform.ServeHTTP(ctx, logger, metrics); err != nil {
-			logger.Error("metrics server stopped", "error", err)
-			stop()
-		}
-	}()
 	router := api.NewRouter(logger, service, db.PGX, api.RouterConfig{MaxBodyBytes: cfg.HTTP.MaxBodyBytes, RequestTimeout: cfg.HTTP.RequestTimeout, AllowedOrigins: []string{"http://localhost:3000"}, CursorSecret: cfg.TokenPepper})
 	server := &http.Server{Addr: cfg.HTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: cfg.HTTP.RequestTimeout + time.Second, WriteTimeout: cfg.HTTP.RequestTimeout + time.Second, IdleTimeout: 60 * time.Second}
-	return platform.ServeHTTP(ctx, logger, server)
+
+	group, ctx := errgroup.WithContext(signalCtx)
+	group.Go(func() error { service.RunTokenTouches(ctx); return nil })
+	group.Go(func() error { runReaper(ctx, logger, schedulerStore); return nil })
+	group.Go(func() error { return serveGRPC(ctx, cfg.GRPCAddr, workerService) })
+	group.Go(func() error { return serveHTTPComponent(ctx, logger, metrics, "metrics") })
+	group.Go(func() error { return serveHTTPComponent(ctx, logger, server, "api") })
+	return group.Wait()
 }
 
-func serveGRPC(ctx context.Context, logger *slog.Logger, address string, service workerv1.WorkerServiceServer) error {
+func serveGRPC(ctx context.Context, address string, service workerv1.WorkerServiceServer) error {
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return err
 	}
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(1<<20), grpc.MaxSendMsgSize(1<<20))
 	workerv1.RegisterWorkerServiceServer(server, service)
-	go func() {
-		if err := server.Serve(listener); err != nil {
-			if ctx.Err() == nil {
-				logger.Error("grpc server stopped", "error", err)
-			}
+	errCh := make(chan error, 1)
+	go func() { errCh <- server.Serve(listener) }()
+	select {
+	case err := <-errCh:
+		if ctx.Err() != nil || errors.Is(err, grpc.ErrServerStopped) {
+			return nil
 		}
-	}()
-	go func() {
-		<-ctx.Done()
+		if err == nil {
+			return errors.New("grpc server stopped unexpectedly")
+		}
+		return fmt.Errorf("serve grpc: %w", err)
+	case <-ctx.Done():
 		done := make(chan struct{})
 		go func() { server.GracefulStop(); close(done) }()
 		select {
@@ -110,7 +112,18 @@ func serveGRPC(ctx context.Context, logger *slog.Logger, address string, service
 		case <-time.After(10 * time.Second):
 			server.Stop()
 		}
-	}()
+		return nil
+	}
+}
+
+func serveHTTPComponent(ctx context.Context, logger *slog.Logger, server *http.Server, name string) error {
+	err := platform.ServeHTTP(ctx, logger, server)
+	if err != nil {
+		return fmt.Errorf("serve %s: %w", name, err)
+	}
+	if ctx.Err() == nil {
+		return fmt.Errorf("%s server stopped unexpectedly", name)
+	}
 	return nil
 }
 
