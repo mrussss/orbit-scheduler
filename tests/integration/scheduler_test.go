@@ -148,4 +148,42 @@ func TestAtomicFetchSkipsLocksAndRollsBackSideEffectFailure(t *testing.T) {
 	if status != "PENDING" || attemptNo != 0 {
 		t.Fatalf("failed transaction leaked task state: %s attempt=%d", status, attemptNo)
 	}
+	if err := store.CancelTask(ctx, projectID, rollbackTask); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CancelTask(ctx, projectID, rollbackTask); err != nil {
+		t.Fatalf("idempotent cancel: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT status FROM tasks WHERE id=$1`, rollbackTask).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "CANCELED" {
+		t.Fatalf("canceled task status=%s", status)
+	}
+
+	reaperTask, reaperWorker := uuid.New(), uuid.New()
+	_, err = pool.Exec(ctx, `INSERT INTO worker_instances(id,worker_name,hostname,capacity,supported_task_types,running_tasks,draining,last_heartbeat_at,started_at,process_version,created_at,updated_at) VALUES($1,'reaper-worker','host',1,ARRAY['reaper'],0,false,now(),now(),'test',now(),now())`, reaperWorker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = pool.Exec(ctx, `INSERT INTO tasks(id,project_id,task_type,payload,payload_hash,status,priority,available_at,execution_timeout,max_attempts,created_at,updated_at) VALUES($1,$2,'reaper','{}',decode(repeat('00',32),'hex'),'PENDING',0,now(),interval '30 seconds',3,now(),now())`, reaperTask, projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignments, err := store.FetchTasks(ctx, scheduler.FetchRequest{WorkerInstanceID: reaperWorker, Requested: 1, LeaseDuration: time.Minute})
+	if err != nil || len(assignments) != 1 {
+		t.Fatalf("reaper fetch=%d err=%v", len(assignments), err)
+	}
+	_, err = pool.Exec(ctx, `UPDATE tasks SET lease_expires_at=now()-interval '1 second' WHERE id=$1`, reaperTask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reaped, err := store.ReapExpired(ctx, 10)
+	if err != nil || reaped.Requeued != 1 {
+		t.Fatalf("reaped=%+v err=%v", reaped, err)
+	}
+	oldReport := scheduler.ReportRequest{TaskID: reaperTask, WorkerInstanceID: reaperWorker, AttemptNo: 1, Outcome: domain.OutcomeSucceeded, ResultHash: domain.HashBytes(nil), ExecutionStartedAt: started, ExecutionFinishedAt: finished}
+	if _, err := store.ReportResult(ctx, oldReport); !errors.Is(err, scheduler.ErrStaleLease) {
+		t.Fatalf("expired attempt report err=%v", err)
+	}
 }

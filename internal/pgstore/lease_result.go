@@ -163,11 +163,15 @@ func (s *Store) classifyRepeatedReport(ctx context.Context, tx pgx.Tx, request s
 	var outcome *domain.TaskOutcome
 	var hash []byte
 	var finished *time.Time
-	err := tx.QueryRow(ctx, `SELECT worker_instance_id,outcome,result_hash,finished_at FROM task_attempts WHERE task_id=$1 AND attempt_no=$2`, request.TaskID, request.AttemptNo).Scan(&workerID, &outcome, &hash, &finished)
+	var leaseExpired bool
+	err := tx.QueryRow(ctx, `SELECT worker_instance_id,outcome,result_hash,finished_at,lease_expired FROM task_attempts WHERE task_id=$1 AND attempt_no=$2`, request.TaskID, request.AttemptNo).Scan(&workerID, &outcome, &hash, &finished, &leaseExpired)
 	if err != nil && err != pgx.ErrNoRows {
 		return scheduler.ReportResult{}, fmt.Errorf("classify repeated result: %w", err)
 	}
 	if err == nil && workerID == request.WorkerInstanceID && finished != nil {
+		if leaseExpired {
+			return scheduler.ReportResult{}, scheduler.ErrStaleLease
+		}
 		if outcome != nil && *outcome == request.Outcome && bytes.Equal(hash, request.ResultHash[:]) {
 			if err := tx.Commit(ctx); err != nil {
 				return scheduler.ReportResult{}, fmt.Errorf("commit repeated result: %w", err)
