@@ -101,7 +101,7 @@ func (h *handlers) updateProject(c *gin.Context) {
 	c.JSON(http.StatusOK, projectView(project))
 }
 func projectView(p domain.Project) gin.H {
-	return gin.H{"id": p.ID, "name": p.Name, "status": p.Status, "task_quota": p.TaskQuota, "max_concurrent_tasks": p.MaxConcurrentTasks, "created_at": p.CreatedAt, "updated_at": p.UpdatedAt}
+	return gin.H{"id": p.ID, "name": p.Name, "status": p.Status, "task_quota": p.TaskQuota, "max_concurrent_tasks": p.MaxConcurrentTasks, "created_at": p.CreatedAt.UTC(), "updated_at": p.UpdatedAt.UTC()}
 }
 
 type createTokenRequest struct {
@@ -160,7 +160,7 @@ func (h *handlers) disableToken(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 func tokenView(t domain.APIToken) gin.H {
-	return gin.H{"id": t.ID, "project_id": t.ProjectID, "prefix": t.TokenPrefix, "name": t.Name, "scopes": t.Scopes, "disabled": t.Disabled, "expires_at": t.ExpiresAt, "last_used_at": t.LastUsedAt, "created_at": t.CreatedAt}
+	return gin.H{"id": t.ID, "project_id": t.ProjectID, "prefix": t.TokenPrefix, "name": t.Name, "scopes": t.Scopes, "disabled": t.Disabled, "expires_at": utcPtr(t.ExpiresAt), "last_used_at": utcPtr(t.LastUsedAt), "created_at": t.CreatedAt.UTC()}
 }
 
 type createTaskRequest struct {
@@ -260,7 +260,7 @@ func (h *handlers) listAttempts(c *gin.Context) {
 	}
 	items := make([]any, len(attempts))
 	for i, a := range attempts {
-		items[i] = gin.H{"task_id": a.TaskID, "attempt_no": a.AttemptNo, "worker_name": a.WorkerName, "worker_instance_id": a.WorkerInstanceID, "started_at": a.StartedAt, "finished_at": a.FinishedAt, "outcome": a.Outcome, "error_type": a.ErrorType, "error_message": a.ErrorMessage, "execution_duration_ms": a.ExecutionDurationMS, "lease_expired": a.LeaseExpired}
+		items[i] = gin.H{"task_id": a.TaskID, "attempt_no": a.AttemptNo, "worker_name": a.WorkerName, "worker_instance_id": a.WorkerInstanceID, "started_at": a.StartedAt.UTC(), "finished_at": utcPtr(a.FinishedAt), "outcome": a.Outcome, "error_type": a.ErrorType, "error_message": a.ErrorMessage, "execution_duration_ms": a.ExecutionDurationMS, "lease_expired": a.LeaseExpired}
 	}
 	c.JSON(200, gin.H{"items": items})
 }
@@ -278,10 +278,10 @@ func (h *handlers) getResult(c *gin.Context) {
 		WriteError(c, http.StatusConflict, "RESULT_NOT_READY", "task has not reached a terminal state", nil)
 		return
 	}
-	c.JSON(200, gin.H{"task_id": task.ID, "status": task.Status, "result": json.RawMessage(task.Result), "error_type": task.FinalErrorType, "error_message": task.FinalErrorMessage, "completed_at": task.CompletedAt})
+	c.JSON(200, gin.H{"task_id": task.ID, "status": task.Status, "result": json.RawMessage(task.Result), "error_type": task.FinalErrorType, "error_message": task.FinalErrorMessage, "completed_at": utcPtr(task.CompletedAt)})
 }
 func taskView(t domain.Task, detail bool) gin.H {
-	view := gin.H{"id": t.ID, "project_id": t.ProjectID, "job_id": t.JobID, "task_type": t.TaskType, "status": t.Status, "priority": t.Priority, "available_at": t.AvailableAt, "execution_timeout_ms": t.ExecutionTimeout.Milliseconds(), "overall_deadline": t.OverallDeadline, "max_attempts": t.MaxAttempts, "attempt_no": t.AttemptNo, "cancel_requested_at": t.CancelRequestedAt, "created_at": t.CreatedAt, "updated_at": t.UpdatedAt, "completed_at": t.CompletedAt}
+	view := gin.H{"id": t.ID, "project_id": t.ProjectID, "job_id": t.JobID, "task_type": t.TaskType, "status": t.Status, "priority": t.Priority, "available_at": t.AvailableAt.UTC(), "execution_timeout_ms": t.ExecutionTimeout.Milliseconds(), "overall_deadline": utcPtr(t.OverallDeadline), "max_attempts": t.MaxAttempts, "attempt_no": t.AttemptNo, "cancel_requested_at": utcPtr(t.CancelRequestedAt), "created_at": t.CreatedAt.UTC(), "updated_at": t.UpdatedAt.UTC(), "completed_at": utcPtr(t.CompletedAt)}
 	if detail {
 		view["payload"] = json.RawMessage(t.Payload)
 	}
@@ -441,7 +441,8 @@ func (h *handlers) listJobTasks(c *gin.Context) {
 	c.JSON(200, gin.H{"items": taskViews(tasks, false), "page_size": limit})
 }
 func jobView(j domain.Job, c domain.JobCounts) gin.H {
-	return gin.H{"id": j.ID, "project_id": j.ProjectID, "name": j.Name, "metadata": json.RawMessage(j.Metadata), "cancel_requested_at": j.CancelRequestedAt, "created_at": j.CreatedAt, "updated_at": j.UpdatedAt, "counts": c, "derived_status": domain.DeriveJobStatus(c)}
+	counts := gin.H{"total": c.Total, "pending": c.Pending, "running": c.Running, "succeeded": c.Succeeded, "failed": c.Failed, "canceled": c.Canceled}
+	return gin.H{"id": j.ID, "project_id": j.ProjectID, "name": j.Name, "metadata": json.RawMessage(j.Metadata), "cancel_requested_at": utcPtr(j.CancelRequestedAt), "created_at": j.CreatedAt.UTC(), "updated_at": j.UpdatedAt.UTC(), "counts": counts, "derived_status": domain.DeriveJobStatus(c)}
 }
 func taskViews(tasks []domain.Task, detail bool) []any {
 	items := make([]any, len(tasks))
@@ -497,4 +498,11 @@ func writeServiceError(c *gin.Context, err error) {
 	default:
 		WriteError(c, 500, "INTERNAL", "internal server error", nil)
 	}
+}
+func utcPtr(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	utc := value.UTC()
+	return &utc
 }

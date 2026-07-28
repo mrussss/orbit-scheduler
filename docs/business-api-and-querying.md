@@ -16,6 +16,8 @@ The scheduler candidate query is supported by
 `tasks(job_id, created_at DESC, id DESC)`. Run the integration fixture with a
 representative data set before recording `EXPLAIN (ANALYZE, BUFFERS)` output;
 performance claims must include row counts and machine details.
+The checked-in measurement and the selectivity-driven index addition are in
+[`query-plans.md`](query-plans.md).
 
 Disabling a project rejects new tasks and excludes its pending tasks from fetch.
 Already-running attempts retain their lease and may finish normally.

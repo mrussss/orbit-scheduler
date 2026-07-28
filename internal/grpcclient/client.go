@@ -3,6 +3,7 @@ package grpcclient
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,6 +23,9 @@ type Client struct {
 }
 
 func Dial(ctx context.Context, address string) (*Client, error) {
+	if strings.HasPrefix(address, ":") {
+		address = "localhost" + address
+	}
 	connection, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(1<<20), grpc.MaxCallSendMsgSize(1<<20)))
 	if err != nil {
 		return nil, err

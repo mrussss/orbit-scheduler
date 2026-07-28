@@ -4,10 +4,10 @@ CREATE INDEX tasks_scheduler_candidates_idx ON tasks(status, available_at, prior
 CREATE INDEX tasks_project_status_page_idx ON tasks(project_id, status, created_at DESC, id DESC);
 CREATE INDEX tasks_job_page_idx ON tasks(job_id, created_at DESC, id DESC) WHERE job_id IS NOT NULL;
 CREATE INDEX tasks_type_status_available_idx ON tasks(task_type, status, available_at);
+CREATE INDEX tasks_fetch_type_order_idx ON tasks(task_type, status, priority DESC, available_at, id);
 CREATE INDEX tasks_expired_lease_idx ON tasks(lease_expires_at) WHERE status = 'RUNNING';
 CREATE INDEX task_attempts_history_idx ON task_attempts(task_id, attempt_no DESC);
 CREATE INDEX worker_instances_heartbeat_idx ON worker_instances(last_heartbeat_at);
 CREATE INDEX outbox_unpublished_idx ON outbox_events(next_attempt_at, created_at) WHERE published_at IS NULL;
 CREATE INDEX outbox_claim_expiry_idx ON outbox_events(claim_expires_at) WHERE published_at IS NULL;
 CREATE INDEX audit_aggregate_time_idx ON audit_events(aggregate_id, occurred_at DESC);
-

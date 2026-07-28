@@ -18,6 +18,7 @@ type Config struct {
 	Registration                                                                                 Registration
 	LeaseDuration, RenewInterval, FetchInterval, HeartbeatInterval, RPCDeadline, ReportRetryBase time.Duration
 	ReportRetries                                                                                int
+	GracePeriod                                                                                  time.Duration
 }
 type Runtime struct {
 	client    Client
@@ -34,25 +35,32 @@ type Runtime struct {
 	loops     sync.WaitGroup
 	mu        sync.Mutex
 	tasks     map[uuid.UUID]context.CancelFunc
+	drainCh   chan struct{}
+	fetchDone chan struct{}
+	drainOnce sync.Once
 }
 
 func NewRuntime(client Client, executors *executor.Registry, logger *slog.Logger, cfg Config) (*Runtime, error) {
 	if client == nil || executors == nil || logger == nil {
 		return nil, errors.New("worker runtime dependencies are required")
 	}
-	if cfg.Registration.InstanceID == uuid.Nil || cfg.Registration.Capacity <= 0 || cfg.LeaseDuration <= 0 || cfg.RenewInterval <= 0 || cfg.RenewInterval >= cfg.LeaseDuration || cfg.FetchInterval <= 0 || cfg.HeartbeatInterval <= 0 || cfg.RPCDeadline <= 0 || cfg.ReportRetries < 0 {
+	if cfg.Registration.InstanceID == uuid.Nil || cfg.Registration.Capacity <= 0 || cfg.LeaseDuration <= 0 || cfg.RenewInterval <= 0 || cfg.RenewInterval >= cfg.LeaseDuration || cfg.FetchInterval <= 0 || cfg.HeartbeatInterval <= 0 || cfg.RPCDeadline <= 0 || cfg.ReportRetries < 0 || cfg.ReportRetryBase < 0 || cfg.GracePeriod <= 0 {
 		return nil, errors.New("invalid worker runtime configuration")
 	}
-	runtime := &Runtime{client: client, executors: executors, logger: logger, cfg: cfg, sem: make(chan struct{}, cfg.Registration.Capacity), tasks: map[uuid.UUID]context.CancelFunc{}}
+	runtime := &Runtime{client: client, executors: executors, logger: logger, cfg: cfg, sem: make(chan struct{}, cfg.Registration.Capacity), tasks: map[uuid.UUID]context.CancelFunc{}, drainCh: make(chan struct{}), fetchDone: make(chan struct{})}
 	runtime.state.Store(int32(StateInitialized))
 	return runtime, nil
 }
 func (r *Runtime) Start(ctx context.Context) error {
+	if !r.state.CompareAndSwap(int32(StateInitialized), int32(StateRunning)) {
+		return errors.New("worker runtime already started")
+	}
 	r.root, r.cancel = context.WithCancel(ctx)
 	rpcCtx, cancel := context.WithTimeout(r.root, r.cfg.RPCDeadline)
 	err := r.client.Register(rpcCtx, r.cfg.Registration)
 	cancel()
 	if err != nil {
+		r.state.Store(int32(StateInitialized))
 		return err
 	}
 	r.started = time.Now()
@@ -63,11 +71,14 @@ func (r *Runtime) Start(ctx context.Context) error {
 }
 func (r *Runtime) fetchLoop() {
 	defer r.loops.Done()
+	defer close(r.fetchDone)
 	ticker := time.NewTicker(r.cfg.FetchInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-r.root.Done():
+			return
+		case <-r.drainCh:
 			return
 		case <-ticker.C:
 			if r.draining.Load() {
@@ -133,13 +144,38 @@ func (r *Runtime) runTask(taskCtx context.Context, task scheduler.Assignment) {
 		r.reportWithRetry(taskCtx, task, result)
 		return
 	}
-	executionCtx, cancelExecution := context.WithCancel(taskCtx)
+	deadline := time.Now().Add(task.ExecutionTimeout)
+	if task.OverallDeadline != nil && task.OverallDeadline.Before(deadline) {
+		deadline = *task.OverallDeadline
+	}
+	executionCtx, cancelExecution := context.WithDeadline(taskCtx, deadline)
 	defer cancelExecution()
 	renewCtx, cancelRenew := context.WithCancel(taskCtx)
 	lostLease := make(chan error, 1)
+	cancelRequested := make(chan struct{}, 1)
 	renewDone := make(chan struct{})
-	go func() { defer close(renewDone); r.renewLoop(renewCtx, task, cancelExecution, lostLease) }()
-	result := exec.Execute(executionCtx, task)
+	go func() {
+		defer close(renewDone)
+		r.renewLoop(renewCtx, task, cancelExecution, lostLease, cancelRequested)
+	}()
+	resultCh := make(chan executor.Result, 1)
+	go func() { resultCh <- exec.Execute(executionCtx, task) }()
+	var result executor.Result
+	select {
+	case result = <-resultCh:
+	case <-executionCtx.Done():
+		started := time.Now().UTC()
+		select {
+		case <-cancelRequested:
+			result = failureResult(started, domain.OutcomeCanceled, domain.ErrorCanceled, "task cancellation requested")
+		default:
+			if errors.Is(executionCtx.Err(), context.DeadlineExceeded) {
+				result = failureResult(started, domain.OutcomeTimeout, domain.ErrorTimeout, "execution deadline exceeded")
+			} else {
+				result = failureResult(started, domain.OutcomeCanceled, domain.ErrorCanceled, "worker shutting down")
+			}
+		}
+	}
 	cancelRenew()
 	<-renewDone
 	select {
@@ -148,10 +184,15 @@ func (r *Runtime) runTask(taskCtx context.Context, task scheduler.Assignment) {
 		return
 	default:
 	}
+	if result.Outcome == domain.OutcomeCanceled && taskCtx.Err() != nil {
+		result.Outcome = domain.OutcomeRetryableFailure
+		result.ErrorType = domain.ErrorCanceled
+		result.ErrorMessage = "worker shutdown interrupted execution"
+	}
 	r.reportWithRetry(taskCtx, task, result)
 }
 
-func (r *Runtime) renewLoop(ctx context.Context, task scheduler.Assignment, cancelExecution context.CancelFunc, lost chan<- error) {
+func (r *Runtime) renewLoop(ctx context.Context, task scheduler.Assignment, cancelExecution context.CancelFunc, lost chan<- error, cancelRequested chan<- struct{}) {
 	ticker := time.NewTicker(r.cfg.RenewInterval)
 	defer ticker.Stop()
 	expiresAt := task.LeaseExpiresAt
@@ -166,6 +207,10 @@ func (r *Runtime) renewLoop(ctx context.Context, task scheduler.Assignment, canc
 			if err == nil {
 				expiresAt = result.LeaseExpiresAt
 				if result.CancelRequested {
+					select {
+					case cancelRequested <- struct{}{}:
+					default:
+					}
 					cancelExecution()
 					return
 				}
@@ -185,9 +230,19 @@ func (r *Runtime) renewLoop(ctx context.Context, task scheduler.Assignment, canc
 }
 
 func (r *Runtime) reportWithRetry(ctx context.Context, task scheduler.Assignment, result executor.Result) {
+	if result.StartedAt.IsZero() {
+		result.StartedAt = time.Now().UTC()
+	}
+	if result.FinishedAt.IsZero() {
+		result.FinishedAt = time.Now().UTC()
+	}
 	request := scheduler.ReportRequest{TaskID: task.TaskID, WorkerInstanceID: r.cfg.Registration.InstanceID, AttemptNo: task.AttemptNo, Outcome: result.Outcome, Result: result.Result, ResultHash: result.ResultHash, ErrorType: result.ErrorType, ErrorMessage: result.ErrorMessage, ExecutionStartedAt: result.StartedAt, ExecutionFinishedAt: result.FinishedAt}
+	baseCtx := ctx
+	if ctx.Err() != nil {
+		baseCtx = context.Background()
+	}
 	for attempt := 0; attempt <= r.cfg.ReportRetries; attempt++ {
-		rpcCtx, cancel := context.WithTimeout(ctx, r.cfg.RPCDeadline)
+		rpcCtx, cancel := context.WithTimeout(baseCtx, r.cfg.RPCDeadline)
 		_, err := r.client.Report(rpcCtx, request)
 		cancel()
 		if err == nil {
@@ -206,11 +261,14 @@ func (r *Runtime) reportWithRetry(ctx context.Context, task scheduler.Assignment
 			delay *= 2
 		}
 		select {
-		case <-ctx.Done():
+		case <-baseCtx.Done():
 			return
 		case <-time.After(delay):
 		}
 	}
+}
+func failureResult(started time.Time, outcome domain.TaskOutcome, errorType domain.ErrorType, message string) executor.Result {
+	return executor.Result{Outcome: outcome, ResultHash: domain.HashBytes(nil), ErrorType: errorType, ErrorMessage: message, StartedAt: started, FinishedAt: time.Now().UTC()}
 }
 func (r *Runtime) finishTask(taskID uuid.UUID) {
 	r.mu.Lock()
@@ -228,20 +286,36 @@ func (r *Runtime) finishTask(taskID uuid.UUID) {
 
 func (r *Runtime) SetDraining(ctx context.Context, draining bool) error {
 	r.draining.Store(draining)
+	if draining && r.State() < StateDraining {
+		r.state.Store(int32(StateDraining))
+	}
+	if draining {
+		r.drainOnce.Do(func() { close(r.drainCh) })
+	}
 	rpcCtx, cancel := context.WithTimeout(ctx, r.cfg.RPCDeadline)
 	defer cancel()
 	return r.client.SetDraining(rpcCtx, r.cfg.Registration.InstanceID, draining)
 }
 func (r *Runtime) Running() int { r.mu.Lock(); defer r.mu.Unlock(); return len(r.tasks) }
 func (r *Runtime) StopNow(ctx context.Context) error {
+	if r.State() == StateStopped {
+		return nil
+	}
+	if r.State() == StateInitialized {
+		r.state.Store(int32(StateStopped))
+		return r.client.Close()
+	}
 	r.draining.Store(true)
+	r.drainOnce.Do(func() { close(r.drainCh) })
 	if r.cancel != nil {
 		r.cancel()
 	}
+	<-r.fetchDone
 	done := make(chan struct{})
 	go func() { r.loops.Wait(); r.wg.Wait(); close(done) }()
 	select {
 	case <-done:
+		r.state.Store(int32(StateStopped))
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

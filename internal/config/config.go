@@ -25,6 +25,7 @@ type Config struct {
 	PGX          PGXPool
 	HTTP         HTTP
 	Worker       Worker
+	HTTPExecutor HTTPExecutor
 }
 
 type SQLPool struct {
@@ -56,8 +57,14 @@ type Worker struct {
 	LeaseDuration     time.Duration
 	RenewInterval     time.Duration
 }
+type HTTPExecutor struct {
+	AllowedHosts                      []string
+	RequestTimeout                    time.Duration
+	MaxRequestBytes, MaxResponseBytes int64
+	MaxRedirects                      int
+}
 
-func Load() (Config, error) {
+func load() (Config, error) {
 	cfg := Config{
 		AppEnv:       env("APP_ENV", "development"),
 		LogLevel:     env("LOG_LEVEL", "info"),
@@ -122,7 +129,52 @@ func Load() (Config, error) {
 	if cfg.Worker.RenewInterval, err = durationEnv("WORKER_RENEW_INTERVAL", 10*time.Second); err != nil {
 		return Config{}, err
 	}
+	cfg.HTTPExecutor.AllowedHosts = split(env("HTTP_EXECUTOR_ALLOWED_HOSTS", "example.com"))
+	if cfg.HTTPExecutor.RequestTimeout, err = durationEnv("HTTP_EXECUTOR_REQUEST_TIMEOUT", 10*time.Second); err != nil {
+		return Config{}, err
+	}
+	requestBytes, err := intEnv("HTTP_EXECUTOR_MAX_REQUEST_BYTES", 256<<10)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.HTTPExecutor.MaxRequestBytes = int64(requestBytes)
+	responseBytes, err := intEnv("HTTP_EXECUTOR_MAX_RESPONSE_BYTES", 1<<20)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.HTTPExecutor.MaxResponseBytes = int64(responseBytes)
+	if cfg.HTTPExecutor.MaxRedirects, err = intEnv("HTTP_EXECUTOR_MAX_REDIRECTS", 3); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func Load() (Config, error) {
+	cfg, err := load()
+	if err != nil {
+		return Config{}, err
+	}
 	return cfg, cfg.Validate()
+}
+func LoadWorker() (Config, error) {
+	cfg, err := load()
+	if err != nil {
+		return Config{}, err
+	}
+	var errs []error
+	if cfg.GRPCAddr == "" {
+		errs = append(errs, errors.New("GRPC_ADDR is required"))
+	}
+	if cfg.Worker.Capacity <= 0 || cfg.Worker.Capacity > 1024 {
+		errs = append(errs, errors.New("invalid worker capacity"))
+	}
+	if cfg.Worker.RenewInterval <= 0 || cfg.Worker.RenewInterval >= cfg.Worker.LeaseDuration {
+		errs = append(errs, errors.New("invalid worker lease timing"))
+	}
+	if len(cfg.HTTPExecutor.AllowedHosts) == 0 || cfg.HTTPExecutor.RequestTimeout <= 0 || cfg.HTTPExecutor.MaxRequestBytes <= 0 || cfg.HTTPExecutor.MaxResponseBytes <= 0 {
+		errs = append(errs, errors.New("invalid HTTP executor configuration"))
+	}
+	return cfg, errors.Join(errs...)
 }
 
 func (c Config) Validate() error {
@@ -147,6 +199,9 @@ func (c Config) Validate() error {
 	}
 	if c.HTTP.RequestTimeout <= 0 || c.HTTP.MaxBodyBytes <= 0 {
 		errs = append(errs, errors.New("HTTP timeout and body limit must be positive"))
+	}
+	if len(c.HTTPExecutor.AllowedHosts) == 0 || c.HTTPExecutor.RequestTimeout <= 0 || c.HTTPExecutor.MaxRequestBytes <= 0 || c.HTTPExecutor.MaxResponseBytes <= 0 || c.HTTPExecutor.MaxRedirects < 0 {
+		errs = append(errs, errors.New("invalid HTTP executor limits"))
 	}
 	if c.Worker.RenewInterval <= 0 || c.Worker.RenewInterval >= c.Worker.LeaseDuration {
 		errs = append(errs, errors.New("worker renew interval must be shorter than lease duration"))

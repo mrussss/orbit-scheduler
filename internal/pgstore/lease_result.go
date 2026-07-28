@@ -116,13 +116,13 @@ func (s *Store) ReportResult(ctx context.Context, request scheduler.ReportReques
 		}
 	}
 	command, err := tx.Exec(ctx, `
-        UPDATE tasks SET status=$5, available_at=COALESCE($6,available_at), lease_owner_instance_id=NULL,
-            lease_expires_at=NULL, result=$7, result_hash=$8, final_error_type=$9, final_error_message=$10,
-            completed_by_worker_instance_id=CASE WHEN $11 THEN $2 ELSE NULL END,
-            completed_attempt_no=CASE WHEN $11 THEN $3 ELSE NULL END,
-            completed_at=$12, updated_at=statement_timestamp()
+        UPDATE tasks SET status=$4, available_at=COALESCE($5,available_at), lease_owner_instance_id=NULL,
+            lease_expires_at=NULL, result=$6, result_hash=$7, final_error_type=$8, final_error_message=$9,
+            completed_by_worker_instance_id=CASE WHEN $10 THEN $2 ELSE NULL END,
+            completed_attempt_no=CASE WHEN $10 THEN $3 ELSE NULL END,
+            completed_at=$11, updated_at=statement_timestamp()
         WHERE id=$1 AND status='RUNNING' AND lease_owner_instance_id=$2 AND attempt_no=$3
-          AND lease_expires_at>statement_timestamp()`, request.TaskID, request.WorkerInstanceID, request.AttemptNo, request.Outcome, newStatus, availableAt, resultJSON, resultHash, finalErrorType, finalErrorMessage, terminal, completedAt)
+		  AND lease_expires_at>statement_timestamp()`, request.TaskID, request.WorkerInstanceID, request.AttemptNo, newStatus, availableAt, resultJSON, resultHash, finalErrorType, finalErrorMessage, terminal, completedAt)
 	if err != nil {
 		return scheduler.ReportResult{}, fmt.Errorf("update result task: %w", err)
 	}

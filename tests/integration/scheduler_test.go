@@ -14,8 +14,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/mrussss/orbit-scheduler/internal/command"
 	"github.com/mrussss/orbit-scheduler/internal/domain"
+	"github.com/mrussss/orbit-scheduler/internal/gormrepo"
 	"github.com/mrussss/orbit-scheduler/internal/pgstore"
 	"github.com/mrussss/orbit-scheduler/internal/scheduler"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
 func TestAtomicFetchSkipsLocksAndRollsBackSideEffectFailure(t *testing.T) {
@@ -69,6 +72,31 @@ func TestAtomicFetchSkipsLocksAndRollsBackSideEffectFailure(t *testing.T) {
 	conflictInput.Payload = []byte(`{"value":2}`)
 	if _, err := store.CreateTask(ctx, conflictInput); !errors.Is(err, command.ErrIdempotencyConflict) {
 		t.Fatalf("idempotency conflict err=%v", err)
+	}
+	jobInput := command.CreateJob{ProjectID: projectID, Name: "batch", Metadata: []byte(`{"source":"test"}`), IdempotencyKey: "job-key", Tasks: []command.CreateTask{{TaskType: "job-task", Payload: []byte(`{"n":1}`), AvailableAt: time.Now(), ExecutionTimeout: time.Minute, MaxAttempts: 2}, {TaskType: "job-task", Payload: []byte(`{"n":2}`), AvailableAt: time.Now(), ExecutionTimeout: time.Minute, MaxAttempts: 2}}}
+	createdJob, err := store.CreateJob(ctx, jobInput)
+	if err != nil || len(createdJob.Tasks) != 2 {
+		t.Fatalf("create job=%+v err=%v", createdJob, err)
+	}
+	repeatedJob, err := store.CreateJob(ctx, jobInput)
+	if err != nil || repeatedJob.Job.ID != createdJob.Job.ID || repeatedJob.Created {
+		t.Fatalf("repeat job=%+v err=%v", repeatedJob, err)
+	}
+	otherProject := uuid.New()
+	_, err = pool.Exec(ctx, `INSERT INTO projects(id,name,status,task_quota,max_concurrent_tasks,created_at,updated_at) VALUES($1,'other','ACTIVE',10,10,now(),now())`, otherProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gormDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queries, err := gormrepo.New(gormDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := queries.GetTask(ctx, otherProject, idempotentID); !errors.Is(err, scheduler.ErrNotFound) {
+		t.Fatalf("cross-tenant lookup err=%v", err)
 	}
 	workers := make([]uuid.UUID, 10)
 	for i := range workers {

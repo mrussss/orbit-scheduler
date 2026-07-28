@@ -79,7 +79,7 @@ func TestRuntimeBoundsConcurrencyAndReports(t *testing.T) {
 	if err := registry.Register("mock", exec); err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := NewRuntime(client, registry, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{Registration: Registration{WorkerName: "test", InstanceID: instanceID, Capacity: 4, TaskTypes: []string{"mock"}}, LeaseDuration: time.Second, RenewInterval: 100 * time.Millisecond, FetchInterval: 5 * time.Millisecond, HeartbeatInterval: 20 * time.Millisecond, RPCDeadline: 50 * time.Millisecond, ReportRetries: 1, ReportRetryBase: time.Millisecond})
+	runtime, err := NewRuntime(client, registry, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{Registration: Registration{WorkerName: "test", InstanceID: instanceID, Capacity: 4, TaskTypes: []string{"mock"}}, LeaseDuration: time.Second, RenewInterval: 100 * time.Millisecond, FetchInterval: 5 * time.Millisecond, HeartbeatInterval: 20 * time.Millisecond, RPCDeadline: 50 * time.Millisecond, ReportRetries: 1, ReportRetryBase: time.Millisecond, GracePeriod: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,5 +109,35 @@ func TestRuntimeBoundsConcurrencyAndReports(t *testing.T) {
 	}
 	if runtime.Running() != 0 {
 		t.Fatalf("running=%d", runtime.Running())
+	}
+}
+
+func TestRuntimeEnforcesExecutionTimeout(t *testing.T) {
+	instanceID := uuid.New()
+	task := scheduler.Assignment{TaskID: uuid.New(), ProjectID: uuid.New(), TaskType: "mock", Payload: []byte(`{"mode":"ignore_context","delay_ms":500}`), AttemptNo: 1, LeaseExpiresAt: time.Now().Add(time.Second), ExecutionTimeout: 10 * time.Millisecond}
+	client := &fakeClient{tasks: []scheduler.Assignment{task}, reports: make(chan scheduler.ReportRequest, 1)}
+	registry := executor.NewRegistry()
+	_ = registry.Register("mock", &executor.Mock{})
+	runtime, err := NewRuntime(client, registry, slog.New(slog.NewTextHandler(io.Discard, nil)), Config{Registration: Registration{WorkerName: "test", InstanceID: instanceID, Capacity: 1, TaskTypes: []string{"mock"}}, LeaseDuration: time.Second, RenewInterval: 100 * time.Millisecond, FetchInterval: time.Millisecond, HeartbeatInterval: 20 * time.Millisecond, RPCDeadline: 20 * time.Millisecond, ReportRetries: 0, ReportRetryBase: time.Millisecond, GracePeriod: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := runtime.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case report := <-client.reports:
+		if report.Outcome != domain.OutcomeTimeout {
+			t.Fatalf("outcome=%s", report.Outcome)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("execution timeout did not report")
+	}
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+	defer stopCancel()
+	if err := runtime.StopNow(stopCtx); err != nil {
+		t.Fatal(err)
 	}
 }

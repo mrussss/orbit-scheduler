@@ -18,6 +18,11 @@ make migrate-up
 make run-server
 ```
 
+`ADMIN_TOKEN` bootstraps projects. Project tokens are stored only as
+peppered hashes and carry `task:*`, `job:*`, and `project:admin` scopes.
+Start a worker in another terminal with `go run ./cmd/orbit-worker`; every
+process start creates a fresh worker instance UUID.
+
 Health endpoints are available at `http://localhost:8080/health/live` and
 `http://localhost:8080/health/ready`; Prometheus metrics are exposed at
 `http://localhost:9091/metrics`.
@@ -33,3 +38,16 @@ make lint
 
 Architecture and execution semantics are documented under `docs/`.
 
+## Delivered scope
+
+- PostgreSQL migrations, constraints, indexes, and split GORM/pgx pools
+- lease-fenced Fetch/Renew/Report/Reaper scheduler transactions
+- tenant-safe Project, Token, Job, Task, Attempt, Result, and Cancel APIs
+- generated gRPC protocol and bounded Fetch → Execute → Renew → Report runtime
+- deterministic fault-capable Mock executor
+- allowlisted HTTP executor with DNS/IP/redirect SSRF checks and size limits
+- execution deadlines, draining, bounded reporting, and graceful shutdown
+
+Transactional outbox rows are written in the delivered phases. Kafka relay,
+consumer, and DLQ behavior belong to Phase 6 and are intentionally not
+implemented here.

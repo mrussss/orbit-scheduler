@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-integration lint fmt proto compose-up compose-down migrate-up migrate-down run-server
+.PHONY: build test test-race test-integration lint fmt tools proto compose-up compose-down migrate-up migrate-down run-server
 
 GO ?= go
 COMPOSE := docker compose -f deploy/docker-compose.yml
@@ -21,6 +21,9 @@ lint:
 
 fmt:
 	$(GO)fmt -w .
+
+tools:
+	./scripts/install-tools.sh
 
 proto:
 	mkdir -p gen
