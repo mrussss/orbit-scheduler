@@ -3,21 +3,25 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"time"
 
+	workerv1 "github.com/mrussss/orbit-scheduler/gen/orbit/worker/v1"
 	"github.com/mrussss/orbit-scheduler/internal/api"
 	"github.com/mrussss/orbit-scheduler/internal/auth"
 	"github.com/mrussss/orbit-scheduler/internal/business"
 	"github.com/mrussss/orbit-scheduler/internal/config"
 	"github.com/mrussss/orbit-scheduler/internal/database"
 	"github.com/mrussss/orbit-scheduler/internal/gormrepo"
+	"github.com/mrussss/orbit-scheduler/internal/grpcservice"
 	"github.com/mrussss/orbit-scheduler/internal/observability"
 	"github.com/mrussss/orbit-scheduler/internal/pgstore"
 	"github.com/mrussss/orbit-scheduler/internal/platform"
 	"github.com/mrussss/orbit-scheduler/internal/scheduler"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"google.golang.org/grpc"
 )
 
 func main() {
@@ -63,6 +67,13 @@ func run() error {
 	}
 	go service.RunTokenTouches(ctx)
 	go runReaper(ctx, logger, schedulerStore)
+	workerService, err := grpcservice.New(schedulerStore)
+	if err != nil {
+		return err
+	}
+	if err := serveGRPC(ctx, logger, cfg.GRPCAddr, workerService); err != nil {
+		return err
+	}
 	logger.Info("starting orbit-server", "http_addr", cfg.HTTPAddr, "grpc_addr", cfg.GRPCAddr)
 	metrics := &http.Server{Addr: cfg.MetricsAddr, Handler: promhttp.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
@@ -74,6 +85,33 @@ func run() error {
 	router := api.NewRouter(logger, service, db.PGX, api.RouterConfig{MaxBodyBytes: cfg.HTTP.MaxBodyBytes, RequestTimeout: cfg.HTTP.RequestTimeout, AllowedOrigins: []string{"http://localhost:3000"}, CursorSecret: cfg.TokenPepper})
 	server := &http.Server{Addr: cfg.HTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: cfg.HTTP.RequestTimeout + time.Second, WriteTimeout: cfg.HTTP.RequestTimeout + time.Second, IdleTimeout: 60 * time.Second}
 	return platform.ServeHTTP(ctx, logger, server)
+}
+
+func serveGRPC(ctx context.Context, logger *slog.Logger, address string, service workerv1.WorkerServiceServer) error {
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return err
+	}
+	server := grpc.NewServer(grpc.MaxRecvMsgSize(1<<20), grpc.MaxSendMsgSize(1<<20))
+	workerv1.RegisterWorkerServiceServer(server, service)
+	go func() {
+		if err := server.Serve(listener); err != nil {
+			if ctx.Err() == nil {
+				logger.Error("grpc server stopped", "error", err)
+			}
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		done := make(chan struct{})
+		go func() { server.GracefulStop(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			server.Stop()
+		}
+	}()
+	return nil
 }
 
 type reaper interface {
