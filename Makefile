@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-integration lint fmt tools proto compose-up compose-down migrate-up migrate-down run-server
+.PHONY: build test test-race test-integration smoke-phase5 lint fmt tools proto compose-up compose-down migrate-up migrate-down run-server
 
 GO ?= go
 COMPOSE := docker compose -f deploy/docker-compose.yml
@@ -14,6 +14,9 @@ test-race:
 
 test-integration:
 	$(GO) test -tags=integration -count=1 ./tests/integration/...
+
+smoke-phase5:
+	./scripts/smoke_phase5.sh
 
 lint:
 	$(GO) vet ./...
