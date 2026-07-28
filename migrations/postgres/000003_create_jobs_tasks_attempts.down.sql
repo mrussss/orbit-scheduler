@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS task_attempts;
+DROP TABLE IF EXISTS tasks;
+DROP TABLE IF EXISTS jobs;
+

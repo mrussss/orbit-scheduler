@@ -1,4 +1,4 @@
-.PHONY: build test test-race lint fmt compose-up compose-down migrate-up migrate-down run-server
+.PHONY: build test test-race test-integration lint fmt compose-up compose-down migrate-up migrate-down run-server
 
 GO ?= go
 COMPOSE := docker compose -f deploy/docker-compose.yml
@@ -11,6 +11,9 @@ test:
 
 test-race:
 	$(GO) test -race ./...
+
+test-integration:
+	$(GO) test -tags=integration -count=1 ./tests/integration/...
 
 lint:
 	$(GO) vet ./...
@@ -33,4 +36,3 @@ migrate-down:
 
 run-server:
 	$(GO) run ./cmd/orbit-server
-
