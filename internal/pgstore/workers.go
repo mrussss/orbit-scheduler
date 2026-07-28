@@ -20,7 +20,7 @@ func (s *Store) RegisterWorker(ctx context.Context, worker domain.WorkerInstance
 	return nil
 }
 func (s *Store) HeartbeatWorker(ctx context.Context, instanceID uuid.UUID, running int, draining bool) error {
-	command, err := s.pool.Exec(ctx, `UPDATE worker_instances SET running_tasks=$2,draining=$3,last_heartbeat_at=statement_timestamp(),updated_at=statement_timestamp() WHERE id=$1`, instanceID, running, draining)
+	command, err := s.pool.Exec(ctx, `UPDATE worker_instances SET reported_running_tasks=$2,draining=$3,last_heartbeat_at=statement_timestamp(),updated_at=statement_timestamp() WHERE id=$1`, instanceID, running, draining)
 	if err != nil {
 		return fmt.Errorf("heartbeat worker: %w", err)
 	}

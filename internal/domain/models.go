@@ -45,6 +45,7 @@ type WorkerInstance struct {
 	Capacity                   int
 	SupportedTaskTypes         []string
 	RunningTasks               int
+	ReportedRunningTasks       int
 	Draining                   bool
 	LastHeartbeatAt, StartedAt time.Time
 	ProcessVersion             string

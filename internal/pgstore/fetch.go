@@ -12,16 +12,60 @@ import (
 )
 
 const fetchTasksSQL = `
-WITH candidates AS (
-    SELECT t.id
+WITH locked_projects AS MATERIALIZED (
+    SELECT p.id, p.max_concurrent_tasks
+    FROM projects p
+    JOIN LATERAL (
+        SELECT t.priority, t.available_at, t.id
+        FROM tasks t
+        WHERE t.project_id = p.id
+          AND t.status = 'PENDING'
+          AND t.available_at <= statement_timestamp()
+          AND (t.overall_deadline IS NULL OR t.overall_deadline > statement_timestamp())
+          AND t.task_type = ANY($1::text[])
+        ORDER BY t.priority DESC, t.available_at ASC, t.id ASC
+        LIMIT 1
+    ) next_task ON true
+    WHERE p.status = 'ACTIVE'
+      AND (
+          SELECT count(*)
+          FROM tasks running
+          WHERE running.project_id = p.id AND running.status = 'RUNNING'
+      ) < p.max_concurrent_tasks
+    ORDER BY next_task.priority DESC, next_task.available_at ASC, next_task.id ASC
+    FOR UPDATE OF p SKIP LOCKED
+    LIMIT $2
+),
+project_capacity AS MATERIALIZED (
+    SELECT p.id,
+           GREATEST(p.max_concurrent_tasks - (
+               SELECT count(*)::integer
+               FROM tasks running
+               WHERE running.project_id = p.id AND running.status = 'RUNNING'
+           ), 0) AS slots
+    FROM locked_projects p
+),
+ranked_tasks AS MATERIALIZED (
+    SELECT t.id, t.project_id, t.priority, t.available_at,
+           row_number() OVER (
+               PARTITION BY t.project_id
+               ORDER BY t.priority DESC, t.available_at ASC, t.id ASC
+           ) AS project_rank
     FROM tasks t
-    JOIN projects p ON p.id = t.project_id
+    JOIN project_capacity capacity ON capacity.id = t.project_id
     WHERE t.status = 'PENDING'
       AND t.available_at <= statement_timestamp()
       AND (t.overall_deadline IS NULL OR t.overall_deadline > statement_timestamp())
       AND t.task_type = ANY($1::text[])
-      AND p.status = 'ACTIVE'
-    ORDER BY t.priority DESC, t.available_at ASC, t.id ASC
+),
+candidates AS (
+    SELECT t.id
+    FROM tasks t
+    JOIN ranked_tasks ranked ON ranked.id = t.id
+    JOIN project_capacity capacity ON capacity.id = ranked.project_id
+    WHERE ranked.project_rank <= capacity.slots
+      AND t.status = 'PENDING'
+    ORDER BY ranked.priority DESC, ranked.available_at ASC, ranked.id ASC
     FOR UPDATE OF t SKIP LOCKED
     LIMIT $2
 )
