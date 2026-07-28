@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/mrussss/orbit-scheduler/internal/command"
 	"github.com/mrussss/orbit-scheduler/internal/domain"
 	"github.com/mrussss/orbit-scheduler/internal/pgstore"
 	"github.com/mrussss/orbit-scheduler/internal/scheduler"
@@ -34,6 +35,41 @@ func TestAtomicFetchSkipsLocksAndRollsBackSideEffectFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var wg sync.WaitGroup
+	idempotentInput := command.CreateTask{ProjectID: projectID, TaskType: "idem", Payload: []byte(`{"value":1}`), AvailableAt: time.Now(), ExecutionTimeout: time.Minute, MaxAttempts: 3, IdempotencyKey: "same-key"}
+	createdIDs := make(chan uuid.UUID, 20)
+	createErrs := make(chan error, 20)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			created, createErr := store.CreateTask(ctx, idempotentInput)
+			if createErr != nil {
+				createErrs <- createErr
+				return
+			}
+			createdIDs <- created.Task.ID
+		}()
+	}
+	wg.Wait()
+	close(createdIDs)
+	close(createErrs)
+	for createErr := range createErrs {
+		t.Fatal(createErr)
+	}
+	var idempotentID uuid.UUID
+	for id := range createdIDs {
+		if idempotentID == uuid.Nil {
+			idempotentID = id
+		} else if id != idempotentID {
+			t.Fatalf("idempotent create returned different ids: %s %s", idempotentID, id)
+		}
+	}
+	conflictInput := idempotentInput
+	conflictInput.Payload = []byte(`{"value":2}`)
+	if _, err := store.CreateTask(ctx, conflictInput); !errors.Is(err, command.ErrIdempotencyConflict) {
+		t.Fatalf("idempotency conflict err=%v", err)
+	}
 	workers := make([]uuid.UUID, 10)
 	for i := range workers {
 		workers[i] = uuid.New()
@@ -50,7 +86,6 @@ func TestAtomicFetchSkipsLocksAndRollsBackSideEffectFailure(t *testing.T) {
 	}
 	claimed := make(chan uuid.UUID, 100)
 	errCh := make(chan error, len(workers))
-	var wg sync.WaitGroup
 	for _, workerID := range workers {
 		wg.Add(1)
 		go func(id uuid.UUID) {

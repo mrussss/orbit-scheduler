@@ -3,10 +3,18 @@ package command
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/mrussss/orbit-scheduler/internal/domain"
+)
+
+var (
+	ErrIdempotencyConflict = errors.New("idempotency key reused with different request")
+	ErrProjectDisabled     = errors.New("project is disabled")
+	ErrQuotaExceeded       = errors.New("project task quota exceeded")
+	ErrInvalidCreate       = errors.New("invalid create request")
 )
 
 type CreateTask struct {

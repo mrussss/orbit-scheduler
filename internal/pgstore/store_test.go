@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/mrussss/orbit-scheduler/internal/command"
 	"github.com/mrussss/orbit-scheduler/internal/domain"
 	"github.com/mrussss/orbit-scheduler/internal/scheduler"
 )
@@ -32,5 +33,23 @@ func TestResultDecision(t *testing.T) {
 	request.Outcome = domain.OutcomeCanceled
 	if _, _, _, err := store.resultDecision(taskForReport{attemptNo: 1, maxAttempts: 3}, request, now); err != scheduler.ErrInvalidOutcome {
 		t.Fatalf("unsolicited cancel err = %v", err)
+	}
+}
+
+func TestNormalizeTaskHashUsesSemanticJSON(t *testing.T) {
+	now := time.Now().UTC()
+	a := command.CreateTask{TaskType: "mock", Payload: json.RawMessage(`{"a":1,"b":2}`), AvailableAt: now, ExecutionTimeout: time.Second, MaxAttempts: 2}
+	b := a
+	b.Payload = json.RawMessage(`{ "b": 2, "a": 1 }`)
+	_, aHash, _, err := normalizeTask(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, bHash, _, err := normalizeTask(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if aHash != bHash {
+		t.Fatal("equivalent requests produced different creation hashes")
 	}
 }
