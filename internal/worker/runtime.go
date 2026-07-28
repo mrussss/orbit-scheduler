@@ -27,6 +27,7 @@ type Runtime struct {
 	root      context.Context
 	cancel    context.CancelFunc
 	draining  atomic.Bool
+	state     atomic.Int32
 	started   time.Time
 	sem       chan struct{}
 	wg        sync.WaitGroup
@@ -42,7 +43,9 @@ func NewRuntime(client Client, executors *executor.Registry, logger *slog.Logger
 	if cfg.Registration.InstanceID == uuid.Nil || cfg.Registration.Capacity <= 0 || cfg.LeaseDuration <= 0 || cfg.RenewInterval <= 0 || cfg.RenewInterval >= cfg.LeaseDuration || cfg.FetchInterval <= 0 || cfg.HeartbeatInterval <= 0 || cfg.RPCDeadline <= 0 || cfg.ReportRetries < 0 {
 		return nil, errors.New("invalid worker runtime configuration")
 	}
-	return &Runtime{client: client, executors: executors, logger: logger, cfg: cfg, sem: make(chan struct{}, cfg.Registration.Capacity), tasks: map[uuid.UUID]context.CancelFunc{}}, nil
+	runtime := &Runtime{client: client, executors: executors, logger: logger, cfg: cfg, sem: make(chan struct{}, cfg.Registration.Capacity), tasks: map[uuid.UUID]context.CancelFunc{}}
+	runtime.state.Store(int32(StateInitialized))
+	return runtime, nil
 }
 func (r *Runtime) Start(ctx context.Context) error {
 	r.root, r.cancel = context.WithCancel(ctx)
