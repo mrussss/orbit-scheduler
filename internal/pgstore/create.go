@@ -72,6 +72,15 @@ func (s *Store) CreateTask(ctx context.Context, input command.CreateTask) (comma
 			return command.CreatedTask{Task: existing, Created: false}, nil
 		}
 	}
+	if input.JobID != nil {
+		var belongs bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM jobs WHERE id=$1 AND project_id=$2)`, *input.JobID, input.ProjectID).Scan(&belongs); err != nil {
+			return command.CreatedTask{}, err
+		}
+		if !belongs {
+			return command.CreatedTask{}, scheduler.ErrNotFound
+		}
+	}
 	if projectStatus != domain.ProjectActive {
 		return command.CreatedTask{}, command.ErrProjectDisabled
 	}
@@ -103,6 +112,9 @@ func (s *Store) CreateJob(ctx context.Context, input command.CreateJob) (command
 	normalizedTasks := make([]normalizedTask, len(input.Tasks))
 	payloadHashes := make([][32]byte, len(input.Tasks))
 	for i := range input.Tasks {
+		if input.Tasks[i].JobID != nil {
+			return command.CreatedJob{}, command.ErrInvalidCreate
+		}
 		input.Tasks[i].ProjectID = input.ProjectID
 		n, _, p, err := normalizeTask(input.Tasks[i])
 		if err != nil {

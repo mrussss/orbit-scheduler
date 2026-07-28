@@ -145,6 +145,9 @@ func (c Config) Validate() error {
 	if c.Worker.Capacity <= 0 || c.Worker.Capacity > 1024 {
 		errs = append(errs, errors.New("WORKER_CAPACITY must be between 1 and 1024"))
 	}
+	if c.HTTP.RequestTimeout <= 0 || c.HTTP.MaxBodyBytes <= 0 {
+		errs = append(errs, errors.New("HTTP timeout and body limit must be positive"))
+	}
 	if c.Worker.RenewInterval <= 0 || c.Worker.RenewInterval >= c.Worker.LeaseDuration {
 		errs = append(errs, errors.New("worker renew interval must be shorter than lease duration"))
 	}
