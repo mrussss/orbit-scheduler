@@ -60,6 +60,14 @@ then runs real `EXPLAIN ANALYZE` for both queries.
 | Correct composite | `(project_id, status, created_at DESC, id DESC)` | 56.8 ms | 10.8 ms | ordered index lookup; Offset still consumes 50,050 entries |
 | Covering | `(project_id, status, created_at DESC, id DESC, priority)` | 13.8 ms | 0.0625 ms | index-only access; Cursor stops after 50 rows |
 
+This table is evidence run A. A later clean-container reproduction through
+`make report-mysql-explain` reported 83.5/55.8 ms without a suitable index,
+75.5/10.6 ms for the correct non-covering composite index, and 59.6/0.0475 ms
+for the covering index (Offset/Cursor respectively). The Cursor plan continued
+to stop at 50 covering-index rows, while Offset consumed 50,050. The wall-time
+variation illustrates cache, container, and host effects and is why these
+numbers are recorded as observations rather than benchmark guarantees.
+
 Representative unindexed Offset plan:
 
 ```text
@@ -93,3 +101,69 @@ after the requested 50 rows.
 - The scheduler fetch index remains a candidate hypothesis until its separate
   `SKIP LOCKED` workload is measured; this page experiment does not prove that
   `(status, available_at, priority DESC, id)` is optimal for claiming.
+
+## Transaction and isolation evidence
+
+The isolation integration test reserves two independent `*sql.Conn` values and
+uses channels to order the transactions; it does not infer ordering from sleeps.
+
+| Transaction A | Transaction B | Observed second read |
+|---|---|---|
+| READ COMMITTED ordinary read | update and commit | A sees `updated` |
+| REPEATABLE READ ordinary read | update and commit | A retains `initial` snapshot |
+| REPEATABLE READ `FOR UPDATE` current read | update already committed | A sees `updated` |
+
+The deadlock test locks project row 1 in transaction A and row 2 in transaction
+B. Both then request the other's row simultaneously. InnoDB consistently
+returns error 1213 to one participant. The bounded retry helper:
+
+- retries only MySQL error 1213, not lock wait timeout 1205;
+- starts a new `*sql.Tx` for every attempt;
+- applies capped exponential delay plus random jitter;
+- returns non-deadlock errors immediately;
+- honors Context cancellation while waiting;
+- reports the number of retries performed.
+
+The integration test reuses the real 1213 error and confirms success after two
+retries with three distinct transactions.
+
+## `SKIP LOCKED` task claiming
+
+The lab claim transaction is intentionally smaller than Orbit's production
+PostgreSQL scheduler:
+
+```text
+BEGIN READ COMMITTED
+SELECT candidate IDs ... FOR UPDATE SKIP LOCKED
+UPDATE tasks, increment attempt, write server-time lease
+INSERT task attempts
+SELECT assignments
+COMMIT
+```
+
+Eight goroutines, each using its own transaction, concurrently claim 100 tasks.
+The test asserts exactly 100 unique IDs, `attempt_no = 1`, 100 attempt rows, and
+no process-wide mutex. A pre-existing `(task_id, attempt_no)` forces the Attempt
+insert to fail; the preceding Task update is then verified to have rolled back
+to `PENDING`, attempt zero. An expired Context also exits without assignment.
+
+The current fetch index remains a tested functional candidate, not a proven
+optimal production index. `available_at <= now` is a range predicate before the
+priority ordering in the index, so data distribution and `LIMIT` can change the
+optimizer's best choice.
+
+## Unique-constraint idempotency
+
+Twenty goroutines submit the same `(project_id, idempotency_key)` and SHA-256
+request hash. The unique constraint serializes the race: one insert reports
+`Created`, all responses return the same Task ID, and the database contains one
+row. Reusing the key with a different hash returns `ErrConflict`. No Redis lock,
+global mutex, or in-memory correctness dependency is involved.
+
+## Scope boundary
+
+This lab does not implement Orbit's full state machine, outbox, worker capacity,
+project quota, lease renewal, result fencing, or reaper semantics. PostgreSQL
+remains the sole production database. The MySQL module exists to provide
+reproducible evidence for schema, query, transaction, lock, retry, idempotency,
+and simplified claiming behavior.
