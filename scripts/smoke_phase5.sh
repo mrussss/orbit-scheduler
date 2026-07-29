@@ -73,7 +73,19 @@ done
 [[ $(docker inspect -f '{{.State.Health.Status}}' "$container_name") == healthy ]]
 postgres_port=$(docker port "$container_name" 5432/tcp | sed -n 's/.*://p')
 database_url="postgres://orbit:orbit@127.0.0.1:${postgres_port}/orbit?sslmode=disable"
-DATABASE_URL="$database_url" "$work_dir/orbit-migrate" up
+migration_ready=false
+for _ in $(seq 1 20); do
+  if DATABASE_URL="$database_url" "$work_dir/orbit-migrate" up >"$work_dir/migrate.log" 2>&1; then
+    migration_ready=true
+    break
+  fi
+  sleep 0.5
+done
+if [[ "$migration_ready" != true ]]; then
+  echo "migration did not become ready after 20 attempts" >&2
+  cat "$work_dir/migrate.log" >&2
+  exit 1
+fi
 
 DATABASE_URL="$database_url" \
 TOKEN_PEPPER="$token_pepper" \
