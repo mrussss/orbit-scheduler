@@ -7,3 +7,6 @@ coverage.out
 *.log
 tmp/
 
+# Local development plans (intentionally not versioned)
+/develop.md
+/develop_myaql.md
