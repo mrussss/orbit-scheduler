@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -42,6 +43,7 @@ func TestSkipLockedConcurrentClaimsAndRollback(t *testing.T) {
 	start := make(chan struct{})
 	claimedCh := make(chan scheduler.ClaimedTask, 100)
 	errCh := make(chan error, 8)
+	var claimedCount atomic.Int64
 	var workers sync.WaitGroup
 	for worker := 0; worker < 8; worker++ {
 		workers.Add(1)
@@ -56,10 +58,24 @@ func TestSkipLockedConcurrentClaimsAndRollback(t *testing.T) {
 					return
 				}
 				if len(tasks) == 0 {
-					return
+					// An empty SKIP LOCKED result only means that no row is
+					// available to this transaction right now. Other claimers may
+					// still hold every remaining candidate, so it is not a global
+					// completion signal.
+					if claimedCount.Load() >= 100 {
+						return
+					}
+					select {
+					case <-ctx.Done():
+						errCh <- fmt.Errorf("worker %d waiting for candidates: %w", worker, ctx.Err())
+						return
+					case <-time.After(5 * time.Millisecond):
+						continue
+					}
 				}
 				for _, task := range tasks {
 					claimedCh <- task
+					claimedCount.Add(1)
 				}
 			}
 		}(worker)
