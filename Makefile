@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-integration test-mysql-foundation test-mysql-lab test-mysql-concurrency report-mysql-explain smoke-phase5 lint fmt tools proto compose-up compose-down migrate-up migrate-down run-server
+.PHONY: build test test-race test-integration test-mysql-foundation test-mysql-lab test-mysql-concurrency report-mysql-explain smoke-phase5 demo verify lint fmt tools proto compose-up compose-down migrate-up migrate-down run-server
 
 GO ?= go
 COMPOSE := docker compose -f deploy/docker-compose.yml
@@ -30,6 +30,11 @@ report-mysql-explain:
 smoke-phase5:
 	./scripts/smoke_phase5.sh
 
+demo:
+	./scripts/demo.sh
+
+verify: lint test-race build test-integration smoke-phase5 test-mysql-lab test-mysql-concurrency
+
 lint:
 	$(GO) vet ./...
 	@test -z "$$($(GO)fmt -l .)" || (echo "go files need formatting"; $(GO)fmt -l .; exit 1)
@@ -45,7 +50,7 @@ proto:
 	PATH=$(CURDIR)/bin:$$PATH ./bin/protoc -I proto --go_out=gen --go_opt=paths=source_relative --go-grpc_out=gen --go-grpc_opt=paths=source_relative proto/orbit/worker/v1/worker.proto
 
 compose-up:
-	$(COMPOSE) up -d postgres kafka prometheus
+	$(COMPOSE) up -d postgres prometheus
 
 compose-down:
 	$(COMPOSE) down --remove-orphans
