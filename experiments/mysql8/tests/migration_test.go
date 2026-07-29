@@ -12,7 +12,7 @@ import (
 
 func TestMigrationsUpRepeatAndDownFromEmptyMySQL(t *testing.T) {
 	environment := testkit.StartMySQL(t)
-	runner, err := migration.New(environment.DSN, environment.MigrationsPath)
+	runner, err := migration.New(environment.MigrationDSN, environment.MigrationsPath)
 	if err != nil {
 		t.Fatal(err)
 	}

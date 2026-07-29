@@ -10,10 +10,11 @@ import (
 )
 
 var (
-	ErrNotFound   = errors.New("mysql lab record not found")
-	ErrDuplicate  = errors.New("mysql lab unique constraint conflict")
-	ErrConstraint = errors.New("mysql lab constraint violation")
-	ErrInvalid    = errors.New("mysql lab invalid argument")
+	ErrNotFound     = errors.New("mysql lab record not found")
+	ErrDuplicate    = errors.New("mysql lab unique constraint conflict")
+	ErrConstraint   = errors.New("mysql lab constraint violation")
+	ErrInvalidState = errors.New("mysql lab invalid state transition")
+	ErrInvalid      = errors.New("mysql lab invalid argument")
 )
 
 func mapError(err error) error {

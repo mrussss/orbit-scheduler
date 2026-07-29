@@ -81,12 +81,19 @@ func (r *Repository) CompleteTask(ctx context.Context, id uuid.UUID, resultJSON 
 	if id == uuid.Nil || !json.Valid(resultJSON) || updatedAt.IsZero() {
 		return ErrInvalid
 	}
-	result := r.db.WithContext(ctx).Model(&model.Task{}).Where("id = ?", model.BinaryUUIDFrom(id)).Updates(map[string]any{"status": model.TaskSucceeded, "result": resultJSON, "updated_at": updatedAt.UTC()})
+	result := r.db.WithContext(ctx).Model(&model.Task{}).Where("id = ? AND status IN ?", model.BinaryUUIDFrom(id), []model.TaskStatus{model.TaskPending, model.TaskRunning}).Updates(map[string]any{"status": model.TaskSucceeded, "result": resultJSON, "updated_at": updatedAt.UTC()})
 	if result.Error != nil {
 		return mapError(result.Error)
 	}
 	if result.RowsAffected == 0 {
-		return ErrNotFound
+		var count int64
+		if err := r.db.WithContext(ctx).Model(&model.Task{}).Where("id = ?", model.BinaryUUIDFrom(id)).Count(&count).Error; err != nil {
+			return mapError(err)
+		}
+		if count == 0 {
+			return ErrNotFound
+		}
+		return ErrInvalidState
 	}
 	return nil
 }

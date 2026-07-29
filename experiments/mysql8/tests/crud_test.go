@@ -19,7 +19,7 @@ import (
 func TestGORMCRUDNativeTransactionsConstraintsAndResources(t *testing.T) {
 	environment := testkit.StartMySQL(t)
 	environment.Config.TxTimeout = 100 * time.Millisecond
-	runner, err := migration.New(environment.DSN, environment.MigrationsPath)
+	runner, err := migration.New(environment.MigrationDSN, environment.MigrationsPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +98,9 @@ func TestGORMCRUDNativeTransactionsConstraintsAndResources(t *testing.T) {
 	loadedTask, err = repo.GetTask(ctx, taskID)
 	if err != nil || loadedTask.Status != model.TaskSucceeded || !jsonEqual(loadedTask.Result, resultJSON) {
 		t.Fatalf("completed task=%+v err=%v", loadedTask, err)
+	}
+	if err := repo.CompleteTask(ctx, taskID, resultJSON, finishedAt); !errors.Is(err, repository.ErrInvalidState) {
+		t.Fatalf("repeat complete err=%v", err)
 	}
 
 	rollbackErr := errors.New("force rollback")

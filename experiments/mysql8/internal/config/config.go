@@ -54,8 +54,8 @@ func (c Config) Validate() error {
 		if parsed.Loc == nil || parsed.Loc.String() != "UTC" || !hasExplicitUTC(c.DSN) {
 			problems = append(problems, errors.New("MYSQL_LAB_DSN must set loc=UTC"))
 		}
-		if !parsed.MultiStatements {
-			problems = append(problems, errors.New("MYSQL_LAB_DSN must set multiStatements=true for versioned migrations"))
+		if parsed.MultiStatements {
+			problems = append(problems, errors.New("MYSQL_LAB_DSN must not enable multiStatements; migrations use a derived DSN"))
 		}
 	}
 	if c.MaxOpenConns <= 0 || c.MaxIdleConns < 0 || c.MaxIdleConns > c.MaxOpenConns {
@@ -65,6 +65,18 @@ func (c Config) Validate() error {
 		problems = append(problems, errors.New("MySQL Lab time limits must be positive"))
 	}
 	return errors.Join(problems...)
+}
+
+func (c Config) MigrationDSN() (string, error) {
+	if err := c.Validate(); err != nil {
+		return "", err
+	}
+	parsed, err := drivermysql.ParseDSN(c.DSN)
+	if err != nil {
+		return "", fmt.Errorf("MYSQL_LAB_DSN: %w", err)
+	}
+	parsed.MultiStatements = true
+	return parsed.FormatDSN(), nil
 }
 
 func hasExplicitUTC(dsn string) bool {

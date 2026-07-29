@@ -29,7 +29,11 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	runner, err := migration.New(cfg.DSN, *migrationsPath)
+	migrationDSN, err := cfg.MigrationDSN()
+	if err != nil {
+		return err
+	}
+	runner, err := migration.New(migrationDSN, *migrationsPath)
 	if err != nil {
 		return err
 	}

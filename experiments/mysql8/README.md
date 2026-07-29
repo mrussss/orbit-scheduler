@@ -9,3 +9,14 @@ Testcontainers tests. Later phases own query-plan and locking experiments.
 
 All commands in this directory use `MYSQL_LAB_DSN`; they never read Orbit's
 production `DATABASE_URL`.
+
+Runtime connections deliberately reject `multiStatements=true`. The migration
+runner derives a separate DSN that enables it only while applying versioned SQL.
+
+```bash
+export MYSQL_LAB_DSN='orbit:orbit@tcp(127.0.0.1:3306)/orbit_lab?parseTime=true&loc=UTC'
+go run ./cmd/mysql8-lab -migrations ../../migrations/mysql8 up
+go test -count=1 ./...
+```
+
+From the repository root, run `make test-mysql-foundation`.
