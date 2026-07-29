@@ -36,6 +36,10 @@ func TestExplainAnalyzeCursorPagination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var mysqlVersion string
+	if err := db.SQL.QueryRowContext(ctx, `SELECT VERSION()`).Scan(&mysqlVersion); err != nil {
+		t.Fatal(err)
+	}
 	pager, err := pagination.New(db.SQL)
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +94,7 @@ func TestExplainAnalyzeCursorPagination(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Logf("MYSQL8_PLAN scenario=%s rows=%d version=8.0.46\nOFFSET:\n%s\nCURSOR:\n%s", scenario.name, summary.TaskCount, offsetPlan, cursorPlan)
+		t.Logf("MYSQL8_PLAN scenario=%s rows=%d version=%s\nOFFSET:\n%s\nCURSOR:\n%s", scenario.name, summary.TaskCount, mysqlVersion, offsetPlan, cursorPlan)
 	}
 	if _, err := db.SQL.ExecContext(ctx, `DROP INDEX idx_experiment ON lab_tasks`); err != nil {
 		t.Fatal(err)

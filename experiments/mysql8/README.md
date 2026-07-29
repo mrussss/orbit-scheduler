@@ -19,4 +19,13 @@ go run ./cmd/mysql8-lab -migrations ../../migrations/mysql8 up
 go test -count=1 ./...
 ```
 
-From the repository root, run `make test-mysql-foundation`.
+From the repository root:
+
+```bash
+make test-mysql-lab
+make test-mysql-concurrency
+make report-mysql-explain
+```
+
+The concurrency command repeats deadlock, `SKIP LOCKED`, and idempotency tests
+three times. The explain command generates a fresh 100,000-task dataset.

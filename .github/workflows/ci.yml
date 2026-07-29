@@ -57,5 +57,7 @@ jobs:
       - name: Download MySQL Lab dependencies
         working-directory: experiments/mysql8
         run: go mod download
-      - name: Run MySQL foundation tests
-        run: make test-mysql-foundation
+      - name: Run MySQL Lab tests
+        run: make test-mysql-lab
+      - name: Run MySQL concurrency tests
+        run: make test-mysql-concurrency
