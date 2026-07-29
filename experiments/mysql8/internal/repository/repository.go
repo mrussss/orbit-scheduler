@@ -102,6 +102,47 @@ func (r *Repository) DeleteTask(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+func (r *Repository) CreateAttempt(ctx context.Context, attempt model.TaskAttempt) error {
+	if attempt.TaskID.IsZero() || attempt.WorkerID.IsZero() || attempt.AttemptNo <= 0 || attempt.StartedAt.IsZero() || attempt.CreatedAt.IsZero() {
+		return ErrInvalid
+	}
+	return mapError(r.db.WithContext(ctx).Create(&attempt).Error)
+}
+
+func (r *Repository) GetAttempt(ctx context.Context, taskID uuid.UUID, attemptNo int) (model.TaskAttempt, error) {
+	if taskID == uuid.Nil || attemptNo <= 0 {
+		return model.TaskAttempt{}, ErrInvalid
+	}
+	var attempt model.TaskAttempt
+	err := r.db.WithContext(ctx).Where("task_id = ? AND attempt_no = ?", model.BinaryUUIDFrom(taskID), attemptNo).First(&attempt).Error
+	return attempt, mapError(err)
+}
+
+func (r *Repository) FinishAttempt(ctx context.Context, taskID uuid.UUID, attemptNo int, outcome string, finishedAt time.Time) error {
+	if taskID == uuid.Nil || attemptNo <= 0 || !validOutcome(outcome) || finishedAt.IsZero() {
+		return ErrInvalid
+	}
+	result := r.db.WithContext(ctx).Model(&model.TaskAttempt{}).Where("task_id = ? AND attempt_no = ?", model.BinaryUUIDFrom(taskID), attemptNo).Updates(map[string]any{"outcome": outcome, "finished_at": finishedAt.UTC()})
+	if result.Error != nil {
+		return mapError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *Repository) DeleteAttempt(ctx context.Context, taskID uuid.UUID, attemptNo int) error {
+	result := r.db.WithContext(ctx).Where("task_id = ? AND attempt_no = ?", model.BinaryUUIDFrom(taskID), attemptNo).Delete(&model.TaskAttempt{})
+	if result.Error != nil {
+		return mapError(result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func validProjectStatus(status model.ProjectStatus) bool {
 	return status == model.ProjectActive || status == model.ProjectDisabled
 }
@@ -118,4 +159,13 @@ func validateTask(task model.Task) error {
 		return ErrInvalid
 	}
 	return nil
+}
+
+func validOutcome(outcome string) bool {
+	switch outcome {
+	case "SUCCEEDED", "RETRYABLE_FAILURE", "PERMANENT_FAILURE", "TIMEOUT", "CANCELED":
+		return true
+	default:
+		return false
+	}
 }

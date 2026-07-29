@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/mrussss/orbit-scheduler/experiments/mysql8/internal/config"
@@ -13,8 +14,9 @@ import (
 )
 
 type Database struct {
-	SQL  *sql.DB
-	GORM *gorm.DB
+	SQL       *sql.DB
+	GORM      *gorm.DB
+	txTimeout time.Duration
 }
 
 func Open(ctx context.Context, cfg config.Config) (*Database, error) {
@@ -38,7 +40,7 @@ func Open(ctx context.Context, cfg config.Config) (*Database, error) {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("open gorm mysql: %w", err)
 	}
-	return &Database{SQL: sqlDB, GORM: gormDB}, nil
+	return &Database{SQL: sqlDB, GORM: gormDB, txTimeout: cfg.TxTimeout}, nil
 }
 
 func (d *Database) Ping(ctx context.Context) error {
@@ -52,12 +54,14 @@ func (d *Database) WithinTx(ctx context.Context, options *sql.TxOptions, fn func
 	if d == nil || d.SQL == nil || fn == nil {
 		return errors.New("mysql transaction dependencies are required")
 	}
-	tx, err := d.SQL.BeginTx(ctx, options)
+	txCtx, cancel := context.WithTimeout(ctx, d.txTimeout)
+	defer cancel()
+	tx, err := d.SQL.BeginTx(txCtx, options)
 	if err != nil {
 		return fmt.Errorf("begin mysql transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := fn(ctx, tx); err != nil {
+	if err := fn(txCtx, tx); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

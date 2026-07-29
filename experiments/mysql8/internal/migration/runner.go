@@ -34,7 +34,7 @@ func (r *Runner) Up() (bool, error) {
 
 func (r *Runner) Down() (bool, error) {
 	err := r.migrate.Down()
-	if errors.Is(err, migrate.ErrNoChange) {
+	if errors.Is(err, migrate.ErrNoChange) || errors.Is(err, migrate.ErrNilVersion) {
 		return false, nil
 	}
 	return err == nil, err

@@ -3,8 +3,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	drivermysql "github.com/go-sql-driver/mysql"
@@ -49,7 +51,7 @@ func (c Config) Validate() error {
 		if !parsed.ParseTime {
 			problems = append(problems, errors.New("MYSQL_LAB_DSN must set parseTime=true"))
 		}
-		if parsed.Loc == nil || parsed.Loc.String() != "UTC" {
+		if parsed.Loc == nil || parsed.Loc.String() != "UTC" || !hasExplicitUTC(c.DSN) {
 			problems = append(problems, errors.New("MYSQL_LAB_DSN must set loc=UTC"))
 		}
 		if !parsed.MultiStatements {
@@ -63,6 +65,15 @@ func (c Config) Validate() error {
 		problems = append(problems, errors.New("MySQL Lab time limits must be positive"))
 	}
 	return errors.Join(problems...)
+}
+
+func hasExplicitUTC(dsn string) bool {
+	_, rawQuery, found := strings.Cut(dsn, "?")
+	if !found {
+		return false
+	}
+	values, err := url.ParseQuery(rawQuery)
+	return err == nil && values.Get("loc") == "UTC"
 }
 
 func intEnv(key string, fallback int) (int, error) {
