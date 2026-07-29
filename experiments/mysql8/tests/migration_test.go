@@ -22,7 +22,7 @@ func TestMigrationsUpRepeatAndDownFromEmptyMySQL(t *testing.T) {
 		t.Fatalf("first up changed=%v err=%v", changed, err)
 	}
 	version, dirty, err := runner.Version()
-	if err != nil || version != 3 || dirty {
+	if err != nil || version != 4 || dirty {
 		t.Fatalf("version=%d dirty=%v err=%v", version, dirty, err)
 	}
 	changed, err = runner.Up()
@@ -49,6 +49,10 @@ func TestMigrationsUpRepeatAndDownFromEmptyMySQL(t *testing.T) {
 	}
 	if indexes != 4 {
 		t.Fatalf("task indexes=%d", indexes)
+	}
+	var covering int
+	if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='lab_tasks' AND index_name='idx_lab_task_page_cover'`).Scan(&covering); err != nil || covering != 5 {
+		t.Fatalf("covering index columns=%d err=%v", covering, err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
