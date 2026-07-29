@@ -4,9 +4,9 @@ Orbit Scheduler is a Go/PostgreSQL distributed task execution platform with
 lease fencing, idempotent APIs, bounded workers, and transactional lifecycle
 events. PostgreSQL is the only production source of truth.
 
-The implementation follows the staged specification in `develop.md`. The
-current delivery target ends at Phase 5: schema, scheduler core, business API,
-gRPC worker runtime, executors, and graceful shutdown.
+The production implementation is intentionally scoped through Phase 5:
+schema, scheduler core, business API, gRPC worker runtime, executors, and
+graceful shutdown.
 
 ## Local quick start
 
