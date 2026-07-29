@@ -201,6 +201,7 @@ See [`docs/mysql8-engineering-lab.md`](docs/mysql8-engineering-lab.md) and
 - [Failure and shutdown cases](docs/failure-cases.md)
 - [PostgreSQL query plans](docs/query-plans.md)
 - [Phase 5 validation record](docs/job-ready-validation.md)
+- [v0.1.0 release verification](docs/release-v0.1.0.md)
 - [Resume wording and interview checklist](docs/resume-and-interview.md)
 
 ## Repository status
