@@ -253,6 +253,7 @@ See [`docs/mysql8-engineering-lab.md`](docs/mysql8-engineering-lab.md) and
 - [PostgreSQL query plans](docs/query-plans.md)
 - [Phase 5 validation record](docs/job-ready-validation.md)
 - [v0.1.0 release verification](docs/release-v0.1.0.md)
+- [v0.2.0 release verification](docs/release-v0.2.0.md)
 - [Resume wording and interview checklist](docs/resume-and-interview.md)
 - [Reliable LLM Executor](docs/llm-executor.md)
 - [LLM failure and retry semantics](docs/llm-failure-and-retry.md)
@@ -261,8 +262,8 @@ See [`docs/mysql8-engineering-lab.md`](docs/mysql8-engineering-lab.md) and
 
 ## Repository status
 
-`v0.1.0` remains the frozen Phase 5 plus MySQL Lab baseline. Reliable LLM
-Executor development is isolated on the Phase 6 branch and must pass the Fake
-Provider, PostgreSQL integration, black-box smoke, Race, and build gates before
-it is released as `v0.2.0`. Kafka Relay, Audit Consumer, DLQ, Tool Calling, and
-broad load/fault work remain optional extensions rather than delivered claims.
+`v0.2.0` is the verified Phase 5 plus MySQL Lab baseline with the Reliable LLM
+Executor. The complete Fake Provider, PostgreSQL integration, black-box smoke,
+Race, build, and MySQL gates are recorded in the release verification document.
+Kafka Relay, Audit Consumer, DLQ, Tool Calling, and broad distributed load/fault
+work remain optional extensions rather than delivered claims.
