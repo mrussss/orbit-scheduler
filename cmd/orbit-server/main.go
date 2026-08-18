@@ -10,18 +10,21 @@ import (
 	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	workerv1 "github.com/mrussss/orbit-scheduler/gen/orbit/worker/v1"
 	"github.com/mrussss/orbit-scheduler/internal/api"
 	"github.com/mrussss/orbit-scheduler/internal/auth"
 	"github.com/mrussss/orbit-scheduler/internal/business"
 	"github.com/mrussss/orbit-scheduler/internal/config"
 	"github.com/mrussss/orbit-scheduler/internal/database"
+	"github.com/mrussss/orbit-scheduler/internal/domain"
 	"github.com/mrussss/orbit-scheduler/internal/gormrepo"
 	"github.com/mrussss/orbit-scheduler/internal/grpcservice"
 	"github.com/mrussss/orbit-scheduler/internal/observability"
 	"github.com/mrussss/orbit-scheduler/internal/pgstore"
 	"github.com/mrussss/orbit-scheduler/internal/platform"
 	"github.com/mrussss/orbit-scheduler/internal/scheduler"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
@@ -52,6 +55,13 @@ func run() error {
 		return err
 	}
 	defer db.Close()
+	sqlPool, err := db.GORM.DB()
+	if err != nil {
+		return err
+	}
+	if err := observability.RegisterDatabaseMetrics(prometheus.DefaultRegisterer, sqlPool, db.PGX); err != nil {
+		return err
+	}
 	queries, err := gormrepo.New(db.GORM)
 	if err != nil {
 		return err
@@ -68,7 +78,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	workerService, err := grpcservice.New(schedulerStore)
+	schedulerMetrics, err := observability.NewSchedulerMetrics(prometheus.DefaultRegisterer)
+	if err != nil {
+		return err
+	}
+	workerService, err := grpcservice.New(schedulerStore, schedulerMetrics)
 	if err != nil {
 		return err
 	}
@@ -79,7 +93,8 @@ func run() error {
 
 	group, ctx := errgroup.WithContext(signalCtx)
 	group.Go(func() error { service.RunTokenTouches(ctx); return nil })
-	group.Go(func() error { runReaper(ctx, logger, schedulerStore); return nil })
+	group.Go(func() error { runReaper(ctx, logger, schedulerStore, schedulerMetrics); return nil })
+	group.Go(func() error { runTaskStatusMetrics(ctx, logger, db.PGX, schedulerMetrics); return nil })
 	group.Go(func() error { return serveGRPC(ctx, cfg.GRPCAddr, workerService) })
 	group.Go(func() error { return serveHTTPComponent(ctx, logger, metrics, "metrics") })
 	group.Go(func() error { return serveHTTPComponent(ctx, logger, server, "api") })
@@ -91,7 +106,7 @@ func serveGRPC(ctx context.Context, address string, service workerv1.WorkerServi
 	if err != nil {
 		return err
 	}
-	server := grpc.NewServer(grpc.MaxRecvMsgSize(1<<20), grpc.MaxSendMsgSize(1<<20))
+	server := grpc.NewServer(grpc.MaxRecvMsgSize(domain.MaxGRPCMessageBytes), grpc.MaxSendMsgSize(domain.MaxGRPCMessageBytes))
 	workerv1.RegisterWorkerServiceServer(server, service)
 	errCh := make(chan error, 1)
 	go func() { errCh <- server.Serve(listener) }()
@@ -131,7 +146,11 @@ type reaper interface {
 	ReapExpired(context.Context, int) (scheduler.ReapResult, error)
 }
 
-func runReaper(ctx context.Context, logger *slog.Logger, store reaper) {
+type reaperMetrics interface {
+	Reaper(scheduler.ReapResult, time.Duration)
+}
+
+func runReaper(ctx context.Context, logger *slog.Logger, store reaper, metrics reaperMetrics) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -147,9 +166,60 @@ func runReaper(ctx context.Context, logger *slog.Logger, store reaper) {
 				}
 				continue
 			}
+			metrics.Reaper(result, time.Since(started))
 			if result.Requeued+result.Failed+result.Canceled > 0 {
 				logger.Info("reaped expired leases", "requeued", result.Requeued, "failed", result.Failed, "canceled", result.Canceled, "duration_ms", time.Since(started).Milliseconds())
 			}
+		}
+	}
+}
+
+type taskStatusQuerier interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+type taskStatusMetrics interface {
+	SetTaskStatus(string, float64)
+}
+
+func runTaskStatusMetrics(ctx context.Context, logger *slog.Logger, pool taskStatusQuerier, metrics taskStatusMetrics) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	statuses := []string{"PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELED"}
+	collect := func() {
+		counts := map[string]float64{}
+		rows, err := pool.Query(ctx, `SELECT status,count(*) FROM tasks GROUP BY status`)
+		if err != nil {
+			if ctx.Err() == nil {
+				logger.Warn("collect task status metrics failed", "error", err)
+			}
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var status string
+			var count int64
+			if err := rows.Scan(&status, &count); err != nil {
+				logger.Warn("scan task status metrics failed", "error", err)
+				return
+			}
+			counts[status] = float64(count)
+		}
+		if err := rows.Err(); err != nil && ctx.Err() == nil {
+			logger.Warn("iterate task status metrics failed", "error", err)
+			return
+		}
+		for _, status := range statuses {
+			metrics.SetTaskStatus(status, counts[status])
+		}
+	}
+	collect()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			collect()
 		}
 	}
 }

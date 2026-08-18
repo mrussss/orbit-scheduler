@@ -17,6 +17,8 @@ const (
 
 func (r *Runtime) State() State { return State(r.state.Load()) }
 func (r *Runtime) GracefulShutdown(ctx context.Context) error {
+	started := time.Now()
+	defer func() { r.observer.Shutdown(time.Since(started).Seconds()) }()
 	state := r.State()
 	if state == StateStopped {
 		return r.closeClient()

@@ -30,5 +30,11 @@ deployment should enforce those network-layer boundaries as well.
   and result hash.
 - A worker that finishes after lease loss must discard its result; fencing
   prevents the old attempt from overwriting a newer one.
-- Kafka is outside the Phase 5 delivery. PostgreSQL outbox rows are already
-  transactional, but publishing begins only in Phase 6.
+- An LLM request can be processed and billed before a response is lost. A later
+  Attempt may invoke the Provider again; fencing protects the stored result,
+  not Provider billing or output determinism.
+- A 429, 5xx, malformed Provider response, or transport failure is reported to
+  the Scheduler instead of being retried in an unbounded Executor loop.
+- Kafka remains outside the delivered path. PostgreSQL outbox rows are already
+  transactional, but Relay, Audit Consumer, and DLQ work belongs to optional
+  Phase 6X only.

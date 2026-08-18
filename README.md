@@ -4,8 +4,8 @@
 
 Orbit Scheduler is a Go and PostgreSQL distributed task execution platform. It
 demonstrates atomic task claiming, lease fencing, idempotent APIs, bounded
-workers, secure HTTP execution, and graceful shutdown with reproducible
-integration evidence.
+workers, secure HTTP and reliable OpenAI-compatible LLM execution, and graceful
+shutdown with reproducible integration evidence.
 
 PostgreSQL is the only production source of truth. The repository also contains
 an isolated MySQL 8 engineering lab for index, isolation, deadlock, idempotency,
@@ -36,8 +36,8 @@ flowchart LR
     WorkerA[Worker A] -->|Fetch / Renew / Report\ngRPC| Scheduler[Scheduler service\npgx transactions]
     WorkerB[Worker B] -->|Fetch / Renew / Report\ngRPC| Scheduler
     Scheduler --> PG
-    WorkerA --> ExecA[Mock / HTTP executor]
-    WorkerB --> ExecB[Mock / HTTP executor]
+    WorkerA --> ExecA[Mock / HTTP / LLM executor]
+    WorkerB --> ExecB[Mock / HTTP / LLM executor]
     API --> Metrics[Prometheus metrics]
 
     Lab[MySQL 8 engineering lab] -. isolated module .-> MySQL[(MySQL 8 / InnoDB)]
@@ -83,6 +83,10 @@ The complete component and transaction diagrams are in
 - Deterministic fault-capable Mock executor.
 - Allowlisted HTTP executor with scheme, DNS, resolved-IP, redirect, dial-path,
   header, body, response, and proxy restrictions.
+- OpenAI-compatible non-streaming LLM executor with strict payload validation,
+  server-side credentials, model allowlisting, Provider concurrency, error
+  classification, usage/cost accounting, and Context cancellation.
+- Low-cardinality Scheduler, Worker, database pool, executor, and LLM metrics.
 
 ### Reproducible evidence
 
@@ -93,6 +97,10 @@ The complete component and transaction diagrams are in
   HTTP and gRPC paths.
 - Race Detector, build, PostgreSQL integration, smoke, and isolated MySQL jobs
   in GitHub Actions.
+- A Fake Provider test and black-box LLM smoke path that exercise 429 retry,
+  Attempt increment, in-flight request cancellation during Worker SIGTERM,
+  fenced reporting, usage/cost persistence, and secret-log checks without a
+  paid model API.
 - Recorded PostgreSQL and MySQL query-plan evidence without production
   performance claims.
 
@@ -140,6 +148,7 @@ Endpoints:
 - liveness: `http://localhost:8080/health/live`
 - readiness: `http://localhost:8080/health/ready`
 - metrics: `http://localhost:9091/metrics`
+- Worker metrics when configured: `http://localhost:9092/metrics`
 - Prometheus UI: `http://localhost:9095`
 
 `ADMIN_TOKEN` creates Projects. A Project Token is returned only when created
@@ -153,6 +162,8 @@ make test-race               # unit tests under the Race Detector
 make build                   # all root cmd binaries
 make test-integration        # real PostgreSQL Testcontainers tests
 make smoke-phase5            # black-box HTTP → gRPC → Worker flow
+make test-llm-executor       # LLM Provider/Executor/Worker Race tests
+make smoke-llm               # Fake Provider retry + SIGTERM recovery flow
 make test-mysql-lab          # complete isolated MySQL 8 lab
 make test-mysql-concurrency  # repeated deadlock/claim/idempotency tests
 make verify                  # complete release verification
@@ -160,6 +171,40 @@ make verify                  # complete release verification
 
 The MySQL tests use real InnoDB through Testcontainers and can take several
 minutes. They never import a MySQL driver into Orbit's production binaries.
+
+## Reliable LLM tasks
+
+Add `llm` to `WORKER_TASK_TYPES` and configure the `LLM_*` values shown in
+`.env.example`. Clients continue to use the generic Task API:
+
+```json
+{
+  "task_type": "llm",
+  "payload": {
+    "model": "approved-model",
+    "messages": [{"role": "user", "content": "Summarize this failure."}],
+    "temperature": 0.2,
+    "max_output_tokens": 500
+  },
+  "execution_timeout_ms": 45000,
+  "max_attempts": 3
+}
+```
+
+There is no chat-specific API. The normal Task, Attempt, and Result endpoints
+show scheduling state and the structured model result. A network failure after
+the Provider accepted a request may cause another model invocation and another
+charge; Orbit fencing protects the authoritative result, not Provider billing.
+
+The fixed baseline classification is: 429, 5xx, and transport failures are
+retryable through a later Orbit Attempt; task/provider deadlines become
+`TIMEOUT`; task or Worker cancellation propagates through Context; 400,
+401/403, 404, and oversized responses are permanent failures. A malformed
+successful response is treated as retryable. The Executor never runs an
+unbounded internal retry loop.
+
+Run `make smoke-llm` for the local Fake Provider demonstration. See
+[`docs/llm-executor.md`](docs/llm-executor.md) for the full contract.
 
 ## MySQL 8 engineering lab
 
@@ -189,6 +234,12 @@ See [`docs/mysql8-engineering-lab.md`](docs/mysql8-engineering-lab.md) and
   exposure requires authenticated TLS or mTLS.
 - HTTP executor application checks complement, but do not replace, egress
   firewalling and cloud metadata protections.
+- LLM execution is non-streaming and does not provide RAG, MCP, Memory,
+  multi-agent workflows, or Tool Calling. API keys and routing are process
+  configuration, never task input.
+- LLM messages and generated content are persisted as Task payload and Result;
+  clients are responsible for submitting data compatible with their retention
+  policy. Prompt and response content are not emitted as logs or metric labels.
 - The recorded timings are local experiment evidence, not production latency,
   throughput, availability, or exactly-once claims.
 
@@ -203,9 +254,15 @@ See [`docs/mysql8-engineering-lab.md`](docs/mysql8-engineering-lab.md) and
 - [Phase 5 validation record](docs/job-ready-validation.md)
 - [v0.1.0 release verification](docs/release-v0.1.0.md)
 - [Resume wording and interview checklist](docs/resume-and-interview.md)
+- [Reliable LLM Executor](docs/llm-executor.md)
+- [LLM failure and retry semantics](docs/llm-failure-and-retry.md)
+- [LLM security boundaries](docs/llm-security-boundaries.md)
+- [LLM performance and fault evidence](docs/llm-performance-and-fault-evidence.md)
 
 ## Repository status
 
-This repository is intentionally feature-frozen at the Phase 5 production
-scope plus the isolated MySQL 8 lab. Future Kafka, full observability, and broad
-load/fault phases are documented as possible extensions, not delivered claims.
+`v0.1.0` remains the frozen Phase 5 plus MySQL Lab baseline. Reliable LLM
+Executor development is isolated on the Phase 6 branch and must pass the Fake
+Provider, PostgreSQL integration, black-box smoke, Race, and build gates before
+it is released as `v0.2.0`. Kafka Relay, Audit Consumer, DLQ, Tool Calling, and
+broad load/fault work remain optional extensions rather than delivered claims.

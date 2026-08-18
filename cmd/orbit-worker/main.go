@@ -2,19 +2,25 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/mrussss/orbit-scheduler/internal/config"
 	"github.com/mrussss/orbit-scheduler/internal/executor"
+	llmexecutor "github.com/mrussss/orbit-scheduler/internal/executor/llm"
 	"github.com/mrussss/orbit-scheduler/internal/grpcclient"
 	"github.com/mrussss/orbit-scheduler/internal/observability"
 	"github.com/mrussss/orbit-scheduler/internal/platform"
 	"github.com/mrussss/orbit-scheduler/internal/scheduler"
 	"github.com/mrussss/orbit-scheduler/internal/worker"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -41,7 +47,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	defer func() { _ = client.Close() }()
 	registry := executor.NewRegistry()
+	workerObserver, err := worker.NewPrometheusObserver(prometheus.DefaultRegisterer)
+	if err != nil {
+		return err
+	}
 	registeredTypes := make([]string, 0, len(cfg.Worker.TaskTypes))
 	for _, taskType := range cfg.Worker.TaskTypes {
 		switch taskType {
@@ -63,6 +74,37 @@ func run() error {
 				return err
 			}
 			registeredTypes = append(registeredTypes, "http")
+		case "llm":
+			provider, err := llmexecutor.NewOpenAICompatible(llmexecutor.OpenAICompatibleConfig{
+				BaseURL: cfg.LLMExecutor.BaseURL, APIKey: cfg.LLMExecutor.APIKey,
+				RequestTimeout: cfg.LLMExecutor.RequestTimeout, DialTimeout: cfg.LLMExecutor.DialTimeout,
+				TLSHandshakeTimeout: cfg.LLMExecutor.TLSHandshakeTimeout, MaxResponseBytes: cfg.LLMExecutor.MaxResponseBytes,
+				MaxIdleConnsPerHost: cfg.LLMExecutor.MaxConcurrency, AllowHTTP: strings.EqualFold(cfg.AppEnv, "test"),
+			})
+			if err != nil {
+				return err
+			}
+			defer provider.CloseIdleConnections()
+			observer, err := llmexecutor.NewPrometheusObserver(prometheus.DefaultRegisterer)
+			if err != nil {
+				return err
+			}
+			costTable := make(map[string]llmexecutor.Cost, len(cfg.LLMExecutor.CostTable))
+			for model, cost := range cfg.LLMExecutor.CostTable {
+				costTable[model] = llmexecutor.Cost{PromptMicrounitsPerMillionTokens: cost.PromptMicrounitsPerMillionTokens, CompletionMicrounitsPerMillionTokens: cost.CompletionMicrounitsPerMillionTokens}
+			}
+			llm, err := llmexecutor.NewExecutor(llmexecutor.ExecutorConfig{
+				ProviderName: cfg.LLMExecutor.Provider, Provider: provider, AllowedModels: cfg.LLMExecutor.AllowedModels,
+				MaxPromptBytes: cfg.LLMExecutor.MaxPromptBytes, MaxOutputTokens: cfg.LLMExecutor.MaxOutputTokens,
+				MaxConcurrency: cfg.LLMExecutor.MaxConcurrency, CostTable: costTable, Observer: observer,
+			})
+			if err != nil {
+				return err
+			}
+			if err := registry.Register("llm", llm); err != nil {
+				return err
+			}
+			registeredTypes = append(registeredTypes, "llm")
 		default:
 			return fmt.Errorf("unsupported worker task type %q", taskType)
 		}
@@ -72,7 +114,7 @@ func run() error {
 		return err
 	}
 	instanceID := uuid.New()
-	runtime, err := worker.NewRuntime(client, registry, logger, worker.Config{Registration: worker.Registration{WorkerName: cfg.Worker.Name, InstanceID: instanceID, Hostname: hostname, Capacity: cfg.Worker.Capacity, TaskTypes: registeredTypes, ProcessVersion: "dev"}, LeaseDuration: cfg.Worker.LeaseDuration, RenewInterval: cfg.Worker.RenewInterval, FetchInterval: cfg.Worker.FetchInterval, HeartbeatInterval: cfg.Worker.HeartbeatInterval, RPCDeadline: 5 * time.Second, ReportRetryBase: 200 * time.Millisecond, ReportRetries: 3, GracePeriod: cfg.Worker.GracePeriod})
+	runtime, err := worker.NewRuntime(client, registry, logger, worker.Config{Registration: worker.Registration{WorkerName: cfg.Worker.Name, InstanceID: instanceID, Hostname: hostname, Capacity: cfg.Worker.Capacity, TaskTypes: registeredTypes, ProcessVersion: "dev"}, LeaseDuration: cfg.Worker.LeaseDuration, RenewInterval: cfg.Worker.RenewInterval, FetchInterval: cfg.Worker.FetchInterval, HeartbeatInterval: cfg.Worker.HeartbeatInterval, RPCDeadline: 5 * time.Second, ReportRetryBase: 200 * time.Millisecond, ReportRetries: 3, GracePeriod: cfg.Worker.GracePeriod, Observer: workerObserver})
 	if err != nil {
 		return err
 	}
@@ -82,13 +124,40 @@ func run() error {
 		_ = client.Close()
 		return err
 	}
+	metricsCtx, cancelMetrics := context.WithCancel(context.Background())
+	defer cancelMetrics()
+	metricsErr := make(chan error, 1)
+	if cfg.Worker.MetricsAddr != "" {
+		metricsServer := &http.Server{Addr: cfg.Worker.MetricsAddr, Handler: promhttp.Handler(), ReadHeaderTimeout: 5 * time.Second}
+		go func() { metricsErr <- platform.ServeHTTP(metricsCtx, logger, metricsServer) }()
+	}
 	logger.Info("orbit-worker started", "worker_name", cfg.Worker.Name, "instance_id", instanceID, "capacity", cfg.Worker.Capacity, "task_types", registeredTypes)
-	<-signalCtx.Done()
+	if cfg.Worker.MetricsAddr == "" {
+		<-signalCtx.Done()
+	} else {
+		select {
+		case <-signalCtx.Done():
+		case err := <-metricsErr:
+			stopCtx, cancelStop := context.WithTimeout(context.Background(), cfg.Worker.GracePeriod)
+			_ = runtime.StopNow(stopCtx)
+			cancelStop()
+			if err == nil {
+				err = errors.New("worker metrics server stopped unexpectedly")
+			}
+			return fmt.Errorf("serve worker metrics: %w", err)
+		}
+	}
 	logger.Info("orbit-worker draining", "grace_period", cfg.Worker.GracePeriod)
 	graceCtx, cancelGrace := context.WithTimeout(context.Background(), cfg.Worker.GracePeriod)
 	defer cancelGrace()
 	if err := runtime.GracefulShutdown(graceCtx); err != nil {
 		return err
+	}
+	cancelMetrics()
+	if cfg.Worker.MetricsAddr != "" {
+		if err := <-metricsErr; err != nil {
+			return fmt.Errorf("stop worker metrics: %w", err)
+		}
 	}
 	logger.Info("orbit-worker stopped", "instance_id", instanceID)
 	return nil

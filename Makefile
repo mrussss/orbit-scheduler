@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-integration test-mysql-foundation test-mysql-lab test-mysql-concurrency report-mysql-explain smoke-phase5 demo verify lint fmt tools proto compose-up compose-down migrate-up migrate-down run-server
+.PHONY: build test test-race test-integration test-llm-executor test-mysql-foundation test-mysql-lab test-mysql-concurrency report-mysql-explain smoke-phase5 smoke-llm demo verify lint fmt tools proto compose-up compose-down migrate-up migrate-down run-server
 
 GO ?= go
 COMPOSE := docker compose -f deploy/docker-compose.yml
@@ -15,6 +15,9 @@ test-race:
 test-integration:
 	$(GO) test -tags=integration -count=1 ./tests/integration/...
 
+test-llm-executor:
+	$(GO) test -race -count=1 ./internal/config ./internal/executor/llm ./internal/worker ./scripts
+
 test-mysql-foundation:
 	cd experiments/mysql8 && $(GO) test -count=1 ./...
 
@@ -30,10 +33,13 @@ report-mysql-explain:
 smoke-phase5:
 	./scripts/smoke_phase5.sh
 
+smoke-llm:
+	./scripts/smoke_llm.sh
+
 demo:
 	./scripts/demo.sh
 
-verify: lint test-race build test-integration smoke-phase5 test-mysql-lab test-mysql-concurrency
+verify: lint test-race build test-integration smoke-phase5 test-llm-executor smoke-llm test-mysql-lab test-mysql-concurrency
 
 lint:
 	$(GO) vet ./...

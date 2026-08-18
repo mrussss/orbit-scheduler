@@ -1,8 +1,11 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -26,6 +29,7 @@ type Config struct {
 	HTTP         HTTP
 	Worker       Worker
 	HTTPExecutor HTTPExecutor
+	LLMExecutor  LLMExecutor
 }
 
 type SQLPool struct {
@@ -49,6 +53,7 @@ type HTTP struct {
 
 type Worker struct {
 	Name              string
+	MetricsAddr       string
 	Capacity          int
 	TaskTypes         []string
 	GracePeriod       time.Duration
@@ -62,6 +67,26 @@ type HTTPExecutor struct {
 	RequestTimeout                    time.Duration
 	MaxRequestBytes, MaxResponseBytes int64
 	MaxRedirects                      int
+}
+
+type LLMExecutor struct {
+	Provider                         string
+	BaseURL                          string
+	APIKey                           string
+	AllowedModels                    []string
+	RequestTimeout                   time.Duration
+	DialTimeout                      time.Duration
+	TLSHandshakeTimeout              time.Duration
+	MaxPromptBytes, MaxResponseBytes int64
+	MaxOutputTokens, MaxConcurrency  int
+	CostTable                        map[string]LLMCost
+	LogContent, ToolCallingEnabled   bool
+	MaxToolRounds                    int
+}
+
+type LLMCost struct {
+	PromptMicrounitsPerMillionTokens     int64 `json:"prompt_microunits_per_million_tokens"`
+	CompletionMicrounitsPerMillionTokens int64 `json:"completion_microunits_per_million_tokens"`
 }
 
 func load() (Config, error) {
@@ -110,6 +135,7 @@ func load() (Config, error) {
 	}
 	cfg.HTTP.MaxBodyBytes = int64(body)
 	cfg.Worker.Name = env("WORKER_NAME", "orbit-worker")
+	cfg.Worker.MetricsAddr = strings.TrimSpace(os.Getenv("WORKER_METRICS_ADDR"))
 	if cfg.Worker.Capacity, err = intEnv("WORKER_CAPACITY", 4); err != nil {
 		return Config{}, err
 	}
@@ -146,6 +172,56 @@ func load() (Config, error) {
 	if cfg.HTTPExecutor.MaxRedirects, err = intEnv("HTTP_EXECUTOR_MAX_REDIRECTS", 3); err != nil {
 		return Config{}, err
 	}
+	cfg.LLMExecutor.Provider = env("LLM_PROVIDER", "openai-compatible")
+	cfg.LLMExecutor.BaseURL = strings.TrimSpace(os.Getenv("LLM_BASE_URL"))
+	cfg.LLMExecutor.APIKey = os.Getenv("LLM_API_KEY")
+	cfg.LLMExecutor.AllowedModels = split(os.Getenv("LLM_ALLOWED_MODELS"))
+	if cfg.LLMExecutor.RequestTimeout, err = durationEnv("LLM_REQUEST_TIMEOUT", 45*time.Second); err != nil {
+		return Config{}, err
+	}
+	if cfg.LLMExecutor.DialTimeout, err = durationEnv("LLM_DIAL_TIMEOUT", 5*time.Second); err != nil {
+		return Config{}, err
+	}
+	if cfg.LLMExecutor.TLSHandshakeTimeout, err = durationEnv("LLM_TLS_HANDSHAKE_TIMEOUT", 5*time.Second); err != nil {
+		return Config{}, err
+	}
+	promptBytes, err := intEnv("LLM_MAX_PROMPT_BYTES", 256<<10)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.LLMExecutor.MaxPromptBytes = int64(promptBytes)
+	responseBytes, err = intEnv("LLM_MAX_RESPONSE_BYTES", 1<<20)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.LLMExecutor.MaxResponseBytes = int64(responseBytes)
+	if cfg.LLMExecutor.MaxOutputTokens, err = intEnv("LLM_MAX_OUTPUT_TOKENS", 4096); err != nil {
+		return Config{}, err
+	}
+	if cfg.LLMExecutor.MaxConcurrency, err = intEnv("LLM_MAX_CONCURRENCY", 4); err != nil {
+		return Config{}, err
+	}
+	if cfg.LLMExecutor.LogContent, err = boolEnv("LLM_LOG_CONTENT", false); err != nil {
+		return Config{}, err
+	}
+	if cfg.LLMExecutor.ToolCallingEnabled, err = boolEnv("LLM_TOOL_CALLING_ENABLED", false); err != nil {
+		return Config{}, err
+	}
+	if cfg.LLMExecutor.MaxToolRounds, err = intEnv("LLM_MAX_TOOL_ROUNDS", 3); err != nil {
+		return Config{}, err
+	}
+	cfg.LLMExecutor.CostTable = map[string]LLMCost{}
+	if raw := strings.TrimSpace(os.Getenv("LLM_COST_TABLE_JSON")); raw != "" {
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&cfg.LLMExecutor.CostTable); err != nil {
+			return Config{}, fmt.Errorf("LLM_COST_TABLE_JSON: %w", err)
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			return Config{}, errors.New("LLM_COST_TABLE_JSON must contain exactly one JSON object")
+		}
+	}
 	return cfg, nil
 }
 
@@ -171,10 +247,54 @@ func LoadWorker() (Config, error) {
 	if cfg.Worker.RenewInterval <= 0 || cfg.Worker.RenewInterval >= cfg.Worker.LeaseDuration {
 		errs = append(errs, errors.New("invalid worker lease timing"))
 	}
-	if len(cfg.HTTPExecutor.AllowedHosts) == 0 || cfg.HTTPExecutor.RequestTimeout <= 0 || cfg.HTTPExecutor.MaxRequestBytes <= 0 || cfg.HTTPExecutor.MaxResponseBytes <= 0 {
+	if contains(cfg.Worker.TaskTypes, "http") && (len(cfg.HTTPExecutor.AllowedHosts) == 0 || cfg.HTTPExecutor.RequestTimeout <= 0 || cfg.HTTPExecutor.MaxRequestBytes <= 0 || cfg.HTTPExecutor.MaxResponseBytes <= 0) {
 		errs = append(errs, errors.New("invalid HTTP executor configuration"))
 	}
+	if contains(cfg.Worker.TaskTypes, "llm") {
+		errs = append(errs, cfg.validateLLM()...)
+	}
 	return cfg, errors.Join(errs...)
+}
+
+func (c Config) validateLLM() []error {
+	var errs []error
+	llm := c.LLMExecutor
+	if llm.Provider != "openai-compatible" {
+		errs = append(errs, errors.New("LLM_PROVIDER must be openai-compatible"))
+	}
+	parsed, err := url.Parse(llm.BaseURL)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		errs = append(errs, errors.New("LLM_BASE_URL must be an absolute URL without credentials, query, or fragment"))
+	} else if parsed.Scheme != "https" && !(strings.EqualFold(c.AppEnv, "test") && parsed.Scheme == "http") {
+		errs = append(errs, errors.New("LLM_BASE_URL must use HTTPS outside the test environment"))
+	}
+	if strings.TrimSpace(llm.APIKey) == "" {
+		errs = append(errs, errors.New("LLM_API_KEY is required when llm tasks are enabled"))
+	}
+	if len(llm.AllowedModels) == 0 {
+		errs = append(errs, errors.New("LLM_ALLOWED_MODELS must not be empty"))
+	}
+	if llm.RequestTimeout <= 0 || llm.DialTimeout <= 0 || llm.TLSHandshakeTimeout <= 0 || llm.MaxPromptBytes <= 0 || llm.MaxResponseBytes <= 0 || llm.MaxOutputTokens <= 0 || llm.MaxConcurrency <= 0 {
+		errs = append(errs, errors.New("invalid LLM executor limits"))
+	}
+	if llm.MaxConcurrency > c.Worker.Capacity {
+		errs = append(errs, errors.New("LLM_MAX_CONCURRENCY cannot exceed WORKER_CAPACITY"))
+	}
+	if llm.ToolCallingEnabled {
+		errs = append(errs, errors.New("LLM tool calling is not available in the reliable executor baseline"))
+	}
+	if llm.LogContent {
+		errs = append(errs, errors.New("LLM_LOG_CONTENT is not supported by the secure executor baseline"))
+	}
+	if llm.MaxToolRounds <= 0 || llm.MaxToolRounds > 3 {
+		errs = append(errs, errors.New("LLM_MAX_TOOL_ROUNDS must be between 1 and 3"))
+	}
+	for model, cost := range llm.CostTable {
+		if !contains(llm.AllowedModels, model) || cost.PromptMicrounitsPerMillionTokens < 0 || cost.CompletionMicrounitsPerMillionTokens < 0 {
+			errs = append(errs, fmt.Errorf("invalid LLM cost entry for model %q", model))
+		}
+	}
+	return errs
 }
 
 func (c Config) Validate() error {
@@ -246,4 +366,25 @@ func durationEnv(key string, fallback time.Duration) (time.Duration, error) {
 		return 0, fmt.Errorf("%s: %w", key, err)
 	}
 	return value, nil
+}
+
+func boolEnv(key string, fallback bool) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s: %w", key, err)
+	}
+	return value, nil
+}
+
+func contains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }

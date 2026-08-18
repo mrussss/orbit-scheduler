@@ -45,6 +45,19 @@ jobs:
       - run: go mod download
       - run: make smoke-phase5
 
+  llm-fake-provider:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.22.x"
+          cache: true
+      - run: go mod download
+      - run: make test-llm-executor
+      - run: make smoke-llm
+
   mysql8-lab:
     runs-on: ubuntu-latest
     timeout-minutes: 20

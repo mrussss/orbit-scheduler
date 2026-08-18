@@ -26,7 +26,7 @@ func Dial(ctx context.Context, address string) (*Client, error) {
 	if strings.HasPrefix(address, ":") {
 		address = "localhost" + address
 	}
-	connection, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(1<<20), grpc.MaxCallSendMsgSize(1<<20)))
+	connection, err := grpc.NewClient(address, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(domain.MaxGRPCMessageBytes), grpc.MaxCallSendMsgSize(domain.MaxGRPCMessageBytes)))
 	if err != nil {
 		return nil, err
 	}

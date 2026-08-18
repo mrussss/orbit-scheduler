@@ -19,6 +19,7 @@ type Config struct {
 	LeaseDuration, RenewInterval, FetchInterval, HeartbeatInterval, RPCDeadline, ReportRetryBase time.Duration
 	ReportRetries                                                                                int
 	GracePeriod                                                                                  time.Duration
+	Observer                                                                                     Observer
 }
 type Runtime struct {
 	client    Client
@@ -40,6 +41,7 @@ type Runtime struct {
 	drainOnce sync.Once
 	closeOnce sync.Once
 	closeErr  error
+	observer  Observer
 }
 
 func NewRuntime(client Client, executors *executor.Registry, logger *slog.Logger, cfg Config) (*Runtime, error) {
@@ -49,7 +51,11 @@ func NewRuntime(client Client, executors *executor.Registry, logger *slog.Logger
 	if cfg.Registration.InstanceID == uuid.Nil || cfg.Registration.Capacity <= 0 || cfg.LeaseDuration <= 0 || cfg.RenewInterval <= 0 || cfg.RenewInterval >= cfg.LeaseDuration || cfg.FetchInterval <= 0 || cfg.HeartbeatInterval <= 0 || cfg.RPCDeadline <= 0 || cfg.ReportRetries < 0 || cfg.ReportRetryBase < 0 || cfg.GracePeriod <= 0 {
 		return nil, errors.New("invalid worker runtime configuration")
 	}
-	runtime := &Runtime{client: client, executors: executors, logger: logger, cfg: cfg, sem: make(chan struct{}, cfg.Registration.Capacity), tasks: map[uuid.UUID]context.CancelFunc{}, drainCh: make(chan struct{}), fetchDone: make(chan struct{})}
+	observer := cfg.Observer
+	if observer == nil {
+		observer = noopObserver{}
+	}
+	runtime := &Runtime{client: client, executors: executors, logger: logger, cfg: cfg, sem: make(chan struct{}, cfg.Registration.Capacity), tasks: map[uuid.UUID]context.CancelFunc{}, drainCh: make(chan struct{}), fetchDone: make(chan struct{}), observer: observer}
 	runtime.state.Store(int32(StateInitialized))
 	return runtime, nil
 }
@@ -95,9 +101,15 @@ func (r *Runtime) fetchLoop() {
 			assignments, err := r.client.Fetch(ctx, scheduler.FetchRequest{WorkerInstanceID: r.cfg.Registration.InstanceID, Requested: available, LeaseDuration: r.cfg.LeaseDuration})
 			cancel()
 			if err != nil {
+				r.observer.Fetch("error", 0, time.Since(fetchStarted).Seconds())
 				r.logger.Warn("fetch tasks failed", "error", err)
 				continue
 			}
+			fetchOutcome := "success"
+			if len(assignments) == 0 {
+				fetchOutcome = "empty"
+			}
+			r.observer.Fetch(fetchOutcome, len(assignments), time.Since(fetchStarted).Seconds())
 			for _, task := range assignments {
 				// The database lease starts after the RPC begins. Using the local RPC
 				// start plus the requested duration is deliberately conservative and
@@ -139,16 +151,19 @@ func (r *Runtime) startTask(task scheduler.Assignment) {
 	r.tasks[task.TaskID] = cancel
 	r.mu.Unlock()
 	r.sem <- struct{}{}
+	r.observer.TaskStarted(task.TaskType)
 	r.wg.Add(1)
 	go r.runTask(taskCtx, task)
 }
 func (r *Runtime) runTask(taskCtx context.Context, task scheduler.Assignment) {
-	defer r.finishTask(task.TaskID)
+	defer r.finishTask(task.TaskID, task.TaskType)
+	executorStarted := time.Now()
 	exec, ok := r.executors.Get(task.TaskType)
 	if !ok {
 		now := time.Now().UTC()
 		result := executor.Result{Outcome: domain.OutcomePermanentFailure, ResultHash: domain.HashBytes(nil), ErrorType: domain.ErrorExecutor, ErrorMessage: "no executor registered for task type", StartedAt: now, FinishedAt: now}
 		r.reportWithRetry(taskCtx, task, result)
+		r.observer.ExecutorFinished(task.TaskType, string(result.Outcome), time.Since(executorStarted).Seconds())
 		return
 	}
 	executionStartedAt := time.Now().UTC()
@@ -187,6 +202,7 @@ func (r *Runtime) runTask(taskCtx context.Context, task scheduler.Assignment) {
 	}
 	cancelRenew()
 	<-renewDone
+	r.observer.ExecutorFinished(task.TaskType, string(result.Outcome), time.Since(executorStarted).Seconds())
 	select {
 	case err := <-lostLease:
 		r.logger.Warn("discarding result after lease loss", "task_id", task.TaskID, "attempt_no", task.AttemptNo, "error", err)
@@ -232,6 +248,7 @@ func (r *Runtime) renewLoop(ctx context.Context, task scheduler.Assignment, canc
 				}
 				continue
 			}
+			r.observer.RenewError()
 			if errors.Is(err, scheduler.ErrStaleLease) || errors.Is(err, scheduler.ErrAlreadyFinalized) || !time.Now().Before(leaseValidUntil) {
 				select {
 				case lost <- err:
@@ -272,6 +289,7 @@ func (r *Runtime) reportWithRetry(ctx context.Context, task scheduler.Assignment
 			r.logger.Error("result report retries exhausted", "task_id", task.TaskID, "attempt_no", task.AttemptNo, "error", err)
 			return
 		}
+		r.observer.ReportRetry()
 		delay := r.cfg.ReportRetryBase
 		for n := 0; n < attempt && delay < r.cfg.RPCDeadline/2; n++ {
 			delay *= 2
@@ -286,7 +304,7 @@ func (r *Runtime) reportWithRetry(ctx context.Context, task scheduler.Assignment
 func failureResult(started time.Time, outcome domain.TaskOutcome, errorType domain.ErrorType, message string) executor.Result {
 	return executor.Result{Outcome: outcome, ResultHash: domain.HashBytes(nil), ErrorType: errorType, ErrorMessage: message, StartedAt: started, FinishedAt: time.Now().UTC()}
 }
-func (r *Runtime) finishTask(taskID uuid.UUID) {
+func (r *Runtime) finishTask(taskID uuid.UUID, taskType string) {
 	r.mu.Lock()
 	if cancel, ok := r.tasks[taskID]; ok {
 		cancel()
@@ -297,6 +315,7 @@ func (r *Runtime) finishTask(taskID uuid.UUID) {
 	case <-r.sem:
 	default:
 	}
+	r.observer.TaskFinished(taskType)
 	r.wg.Done()
 }
 

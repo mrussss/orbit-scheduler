@@ -12,20 +12,24 @@ flowchart TB
         Server[orbit-server\nHTTP API + gRPC scheduler]
         Worker1[orbit-worker A]
         Worker2[orbit-worker B]
-        Executor1[Mock / HTTP executor]
-        Executor2[Mock / HTTP executor]
-        Metrics[Prometheus endpoint]
+        Executor1[Mock / HTTP / LLM executor]
+        Executor2[Mock / HTTP / LLM executor]
+        Metrics[Server + Worker Prometheus endpoints]
 
         Worker1 --> Executor1
         Worker2 --> Executor2
         Worker1 -->|Register / Heartbeat / Fetch\nRenew / Report| Server
         Worker2 -->|Register / Heartbeat / Fetch\nRenew / Report| Server
         Server --> Metrics
+        Worker1 --> Metrics
+        Worker2 --> Metrics
     end
 
     CLI -->|tenant-scoped HTTP| Server
     Server -->|GORM management queries| PG[(PostgreSQL 16)]
     Server -->|pgx scheduling transactions| PG
+    Executor1 -->|configured HTTPS| Provider[OpenAI-compatible Provider]
+    Executor2 -->|configured HTTPS| Provider
 
     subgraph Lab[Independent engineering lab]
         MySQLModule[experiments/mysql8\nseparate Go module]
@@ -37,6 +41,10 @@ PostgreSQL is the sole production authority. The MySQL module shares neither a
 driver nor a repository abstraction with the production binaries. Kafka relay
 and consumer entry points are scaffolds and are not part of the delivered data
 flow.
+
+The LLM Provider is an external execution dependency, never a state authority.
+It cannot read or modify Scheduler storage. LLM requests remain inside the
+Worker's existing capacity, lease, deadline, cancellation, and report flow.
 
 ## Data-access split
 
@@ -136,4 +144,3 @@ sequenceDiagram
     end
     W->>W: stop loops and close gRPC client
 ```
-
