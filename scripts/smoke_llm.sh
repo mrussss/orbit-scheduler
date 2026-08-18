@@ -203,9 +203,11 @@ attempts_json=$(curl --silent --show-error --fail-with-body \
 [[ "$attempts_json" == *'"attempt_no":1'* ]]
 [[ "$attempts_json" == *'"attempt_no":2'* ]]
 
-curl --silent --fail "http://127.0.0.1:${worker_metrics_port}/metrics" | grep -q 'orbit_llm_requests_total'
-curl --silent --fail "http://127.0.0.1:${worker_metrics_port}/metrics" | grep -q 'orbit_llm_rate_limited_total'
-curl --silent --fail "http://127.0.0.1:${server_metrics_port}/metrics" | grep -q 'orbit_scheduler_report_total'
+worker_metrics=$(curl --silent --fail "http://127.0.0.1:${worker_metrics_port}/metrics")
+grep -q 'orbit_llm_requests_total' <<<"$worker_metrics"
+grep -q 'orbit_llm_rate_limited_total' <<<"$worker_metrics"
+server_metrics=$(curl --silent --fail "http://127.0.0.1:${server_metrics_port}/metrics")
+grep -q 'orbit_scheduler_report_total' <<<"$server_metrics"
 
 shutdown_task_json=$(curl --silent --show-error --fail-with-body \
   -H "Authorization: Bearer ${project_token}" \
