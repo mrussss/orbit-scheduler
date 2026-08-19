@@ -30,7 +30,7 @@ The model loop is bounded to 3–6 model rounds and a separately bounded number 
 
 `agent_steps` stores `(task_id, attempt_no, step_no)`, Worker identity, `MODEL/TOOL/FINAL/ERROR`, optional tool name, bounded structured input/output summaries, status, and timestamps. Writes use the same `task + worker_instance + attempt + live lease` fencing identity as result reporting. Step numbers must be contiguous. A stale or expired Attempt cannot insert or finish authoritative Trace rows.
 
-`GET /api/v1/tasks/:task_id/events` is a tenant-scoped SSE replay over PostgreSQL Trace. Events are `task_status`, `step_started`, `step_finished`, `tool_call`, `tool_result`, `final`, and `error`. `Last-Event-ID` uses `attempt:step:phase`. Reconnecting rebuilds history from DB; the stream is never a state authority. Disconnecting the HTTP client only ends that stream. Task cancellation still flows through lease renewal into the Worker Context and stops the Agent.
+`GET /api/v1/tasks/:task_id/events` is a tenant-scoped SSE replay over PostgreSQL Trace. Events are `task_status`, `agent_step_started`, `agent_step_finished`, `tool_call`, `tool_result`, `final_result`, and `error`. `Last-Event-ID` uses `attempt:step:phase`. Reconnecting rebuilds step history from DB, while `final_result` is read from the terminal Task row; the stream is never a state authority. Disconnecting the HTTP client only ends that stream. Task cancellation still flows through lease renewal into the Worker Context and stops the Agent.
 
 Trace summaries contain counts, byte sizes, status, tool names, and repository aliases—not issue text, error-log text, source content, model output, API keys, or raw tool arguments/results.
 
@@ -42,8 +42,11 @@ The deterministic scorer reports success, expected-file hit, expected-evidence h
 
 ```bash
 make test-agent
+make smoke-agent
 make smoke-agent-eval
 ```
+
+`make smoke-agent` starts real PostgreSQL, HTTP/gRPC server, Worker, and Fake Provider processes. It proves 429 creates Attempt 2, disconnecting SSE leaves the Task running, explicit cancellation stops the post-tool model round and commits `CANCELED`, a Worker killed after `tool_result` is recovered by lease expiry and a replacement Attempt, DB replay spans both Attempts, and the terminal Result contains Token/cost/latency evidence.
 
 For a configured real Provider, run `go run ./cmd/orbit-agent-eval -fake-provider=false -repository /absolute/snapshot`; `LLM_BASE_URL`, `LLM_API_KEY`, and `AGENT_MODEL` remain environment configuration.
 

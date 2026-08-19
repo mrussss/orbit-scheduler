@@ -26,11 +26,12 @@ The personal closed-book explanation, manual modification, fault injection, debu
 The final local `make verify` completed successfully on 2026-08-19:
 
 - formatting and `go vet`, all Go unit tests under the Race Detector, and every root command build passed;
-- PostgreSQL/Testcontainers integration, including Agent Trace monotonicity, tool-step crash/lease recovery, stale fencing, and 429 → Attempt 2, passed in 33.058 seconds;
+- PostgreSQL/Testcontainers integration, including Agent Trace monotonicity, tool-step crash/lease recovery, stale fencing, and 429 → Attempt 2, passed in 34.554 seconds;
 - the existing two-Worker scheduler smoke and Reliable LLM 429/SIGTERM smoke passed;
+- the full Agent HTTP/gRPC/Worker smoke passed 429 retry, post-tool cancellation, SSE disconnect/replay, and kill-after-tool lease recovery through Attempt 2;
 - Agent/tool/eval/API/pgstore Race tests passed;
 - all ten pinned Gateway Fake Provider evals passed with file/evidence hits and no forbidden claim;
-- the complete MySQL Lab passed in 194.659 seconds and its three-round concurrency gate passed in 229.898 seconds;
-- the Python baseline's Pydantic, async tools, native-SDK-shape loop, and shared-eval tests passed: 4 tests in 0.40 seconds.
+- the complete MySQL Lab passed in 197.521 seconds and its three-round concurrency gate passed in 220.860 seconds;
+- the Python baseline's Pydantic, async tools, native-SDK-shape loop, and shared ten-case eval tests passed in a clean Python 3.12 container: 4 tests in 0.52 seconds.
 
 These are local correctness and reproducibility observations, not production performance, availability, cost, or SLO claims.

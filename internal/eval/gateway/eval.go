@@ -44,7 +44,7 @@ type Metrics struct {
 	LatencyMS               int64  `json:"latency_ms"`
 	PromptTokens            int    `json:"prompt_tokens"`
 	CompletionTokens        int    `json:"completion_tokens"`
-	EstimatedCostMicrounits int64  `json:"estimated_cost_microunits"`
+	EstimatedCostMicrounits int64  `json:"estimated_cost"`
 }
 
 func LoadCases(root string) ([]Case, error) {

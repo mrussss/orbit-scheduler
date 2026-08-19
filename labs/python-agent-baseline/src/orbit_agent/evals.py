@@ -27,7 +27,7 @@ class EvalMetrics:
     latency_ms: int
     prompt_tokens: int
     completion_tokens: int
-    estimated_cost_microunits: int
+    estimated_cost: int
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), separators=(",", ":"))

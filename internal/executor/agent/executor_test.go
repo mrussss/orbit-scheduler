@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -153,6 +154,31 @@ func TestExecutorCancellationRateLimitAndTraceFailure(t *testing.T) {
 			t.Fatalf("result=%+v", result)
 		}
 	})
+}
+
+func TestExecutorTraceNeverPersistsPromptArgumentsOrToolResultContent(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "main.go"), "package main\nconst marker = \"secret-source-marker\"\n")
+	provider := &fakeToolProvider{responses: []llm.ToolResponse{
+		{Model: "model-a", FinishReason: "tool_calls", ToolCalls: []llm.ToolCall{{ID: "call-secret", Name: ToolReadFile, Arguments: json.RawMessage(`{"path":"main.go"}`)}}},
+		{Model: "model-a", FinishReason: "stop", Content: `{"problem_type":"inspection","likely_causes":["bounded"],"code_evidence":[],"recommended_checks":["review"],"confidence":0.5,"limits":[]}`},
+	}}
+	tracer := &memoryTracer{}
+	executor := newTestExecutor(t, root, provider, tracer, 3)
+	assignment := agentAssignment()
+	assignment.Payload = json.RawMessage(`{"repository_root":"gateway","issue":"secret-issue-marker","error_log":"secret-log-marker"}`)
+	if result := executor.Execute(context.Background(), assignment); result.Outcome != domain.OutcomeSucceeded {
+		t.Fatalf("result=%+v", result)
+	}
+	trace, err := json.Marshal(tracer.steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"secret-issue-marker", "secret-log-marker", "secret-source-marker", `\"path\":\"main.go\"`} {
+		if strings.Contains(string(trace), forbidden) {
+			t.Fatalf("trace leaked %q: %s", forbidden, trace)
+		}
+	}
 }
 
 func newTestExecutor(t *testing.T, root string, provider llm.ToolProvider, tracer Tracer, maxSteps int) *Executor {

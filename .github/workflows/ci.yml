@@ -75,6 +75,7 @@ jobs:
           path: gateway-system
       - run: go mod download
       - run: make test-agent
+      - run: make smoke-agent
       - run: go run ./cmd/orbit-agent-eval -fake-provider=true -repository ./gateway-system
 
   python-agent-baseline:

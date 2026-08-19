@@ -178,12 +178,15 @@ make smoke-phase5            # black-box HTTP → gRPC → Worker flow
 make test-llm-executor       # LLM Provider/Executor/Worker Race tests
 make smoke-llm               # Fake Provider retry + SIGTERM recovery flow
 make test-agent              # Agent/tool/Trace/SSE/eval Race tests
+make smoke-agent             # real API/gRPC/Worker/Trace/SSE Agent fault path
 make smoke-agent-eval        # ten pinned Gateway evals with Fake Provider
 cd labs/python-agent-baseline && pytest -q  # Python compatibility baseline
 make test-mysql-lab          # complete isolated MySQL 8 lab
 make test-mysql-concurrency  # repeated deadlock/claim/idempotency tests
 make verify                  # complete release verification
 ```
+
+The requirement-by-requirement implementation evidence and the deliberately separate personal ownership checklist are recorded in [`docs/develop-completion-matrix.md`](docs/develop-completion-matrix.md).
 
 The MySQL tests use real InnoDB through Testcontainers and can take several
 minutes. They never import a MySQL driver into Orbit's production binaries.

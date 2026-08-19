@@ -50,6 +50,7 @@ func TestToolboxRejectsTraversalSymlinkSecretsBinaryLargeAndMalformedCalls(t *te
 	}{
 		{"absolute", ToolReadFile, `{"path":"/etc/passwd"}`},
 		{"traversal", ToolReadFile, `{"path":"../secret.go"}`},
+		{"passwd traversal", ToolReadFile, `{"path":"../../etc/passwd"}`},
 		{"symlink", ToolReadFile, `{"path":"escape.go"}`},
 		{"secret", ToolReadFile, `{"path":".env"}`},
 		{"large", ToolReadFile, `{"path":"large.go"}`},
@@ -57,6 +58,8 @@ func TestToolboxRejectsTraversalSymlinkSecretsBinaryLargeAndMalformedCalls(t *te
 		{"missing", ToolReadFile, `{"path":"missing.go"}`},
 		{"unknown tool", "shell", `{}`},
 		{"unknown arg", ToolReadFile, `{"path":"ok.go","command":"cat"}`},
+		{"invalid type", ToolReadFile, `{"path":123}`},
+		{"missing required", ToolReadFile, `{"start_line":1}`},
 		{"malformed", ToolReadFile, `{"path":`},
 	}
 	for _, test := range tests {

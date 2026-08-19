@@ -72,6 +72,17 @@ func (h *handlers) taskEvents(c *gin.Context) {
 		}
 		flusher.Flush()
 		if task.Status.Terminal() {
+			if task.Status == domain.TaskSucceeded && len(task.Result) > 0 {
+				if err := writeSSE(c, "", "final_result", map[string]any{"task_id": task.ID, "attempt_no": task.AttemptNo, "status": task.Status, "result": json.RawMessage(task.Result), "completed_at": task.CompletedAt}); err != nil {
+					return
+				}
+				flusher.Flush()
+			} else if task.Status == domain.TaskFailed || task.Status == domain.TaskCanceled {
+				if err := writeSSE(c, "", "error", map[string]any{"task_id": task.ID, "attempt_no": task.AttemptNo, "status": task.Status, "error_type": task.FinalErrorType, "error_message": task.FinalErrorMessage, "completed_at": task.CompletedAt}); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
 			return
 		}
 		select {
@@ -95,7 +106,7 @@ func buildAgentEvents(steps []domain.AgentStep) []agentEvent {
 	events := make([]agentEvent, 0, len(steps)*4)
 	for _, step := range steps {
 		base := map[string]any{"task_id": step.TaskID, "attempt_no": step.AttemptNo, "step_no": step.StepNo, "kind": step.Kind, "tool_name": step.ToolName, "started_at": step.StartedAt.UTC(), "input_summary": json.RawMessage(step.InputSummary)}
-		events = append(events, newAgentEvent(step, 0, "step_started", base))
+		events = append(events, newAgentEvent(step, 0, "agent_step_started", base))
 		if step.Kind == "TOOL" {
 			events = append(events, newAgentEvent(step, 1, "tool_call", base))
 		}
@@ -103,13 +114,11 @@ func buildAgentEvents(steps []domain.AgentStep) []agentEvent {
 			continue
 		}
 		finished := map[string]any{"task_id": step.TaskID, "attempt_no": step.AttemptNo, "step_no": step.StepNo, "kind": step.Kind, "tool_name": step.ToolName, "status": step.Status, "started_at": step.StartedAt.UTC(), "finished_at": step.FinishedAt.UTC(), "output_summary": json.RawMessage(step.OutputSummary)}
-		events = append(events, newAgentEvent(step, 2, "step_finished", finished))
+		events = append(events, newAgentEvent(step, 2, "agent_step_finished", finished))
 		special := ""
 		switch step.Kind {
 		case "TOOL":
 			special = "tool_result"
-		case "FINAL":
-			special = "final"
 		case "ERROR":
 			special = "error"
 		}

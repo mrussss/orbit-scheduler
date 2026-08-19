@@ -89,9 +89,28 @@ func TestAgentTraceMonotonicUpdatesAndStaleAttemptFencing(t *testing.T) {
 		t.Fatalf("attempt=%d", second.AttemptNo)
 	}
 	secondStep := running
-	secondStep.AttemptNo, secondStep.Status, secondStep.FinishedAt = 2, scheduler.AgentStepRunning, nil
+	secondStarted := time.Now().UTC()
+	secondStep.AttemptNo, secondStep.Status, secondStep.StartedAt, secondStep.FinishedAt, secondStep.OutputSummary = 2, scheduler.AgentStepRunning, secondStarted, nil, nil
 	if err := store.RecordAgentStep(ctx, secondStep); err != nil {
 		t.Fatal(err)
+	}
+	secondFinished := secondStarted.Add(time.Millisecond)
+	secondStep.Status, secondStep.FinishedAt, secondStep.OutputSummary = scheduler.AgentStepSucceeded, &secondFinished, []byte(`{"tool_calls":0}`)
+	if err := store.RecordAgentStep(ctx, secondStep); err != nil {
+		t.Fatal(err)
+	}
+	finalStep := scheduler.RecordAgentStepRequest{TaskID: second.TaskID, WorkerInstanceID: workerID, AttemptNo: second.AttemptNo, StepNo: 2, Kind: scheduler.AgentStepFinal, OutputSummary: []byte(`{"reason":"diagnosis_ready"}`), Status: scheduler.AgentStepSucceeded, StartedAt: secondFinished, FinishedAt: ptrTime(secondFinished)}
+	if err := store.RecordAgentStep(ctx, finalStep); err != nil {
+		t.Fatal(err)
+	}
+	authoritative := []byte(`{"attempt":2}`)
+	if _, err := store.ReportResult(ctx, scheduler.ReportRequest{TaskID: second.TaskID, WorkerInstanceID: workerID, AttemptNo: second.AttemptNo, Outcome: domain.OutcomeSucceeded, Result: authoritative, ResultHash: domain.HashBytes(authoritative), ExecutionStartedAt: secondStarted, ExecutionFinishedAt: secondFinished}); err != nil {
+		t.Fatal(err)
+	}
+	staleResult := []byte(`{"attempt":1}`)
+	_, staleResultErr := store.ReportResult(ctx, scheduler.ReportRequest{TaskID: first.TaskID, WorkerInstanceID: workerID, AttemptNo: first.AttemptNo, Outcome: domain.OutcomeSucceeded, Result: staleResult, ResultHash: domain.HashBytes(staleResult), ExecutionStartedAt: started, ExecutionFinishedAt: toolFinished})
+	if !errors.Is(staleResultErr, scheduler.ErrStaleLease) && !errors.Is(staleResultErr, scheduler.ErrAlreadyFinalized) && !errors.Is(staleResultErr, scheduler.ErrConflict) {
+		t.Fatalf("stale result error=%v", staleResultErr)
 	}
 	var firstCount, secondCount int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_steps WHERE task_id=$1 AND attempt_no=1`, created.Task.ID).Scan(&firstCount); err != nil {
@@ -100,8 +119,12 @@ func TestAgentTraceMonotonicUpdatesAndStaleAttemptFencing(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM agent_steps WHERE task_id=$1 AND attempt_no=2`, created.Task.ID).Scan(&secondCount); err != nil {
 		t.Fatal(err)
 	}
-	if firstCount != 2 || secondCount != 1 {
+	if firstCount != 2 || secondCount != 2 {
 		t.Fatalf("first=%d second=%d", firstCount, secondCount)
+	}
+	var stored []byte
+	if err := pool.QueryRow(ctx, `SELECT result FROM tasks WHERE id=$1`, created.Task.ID).Scan(&stored); err != nil || !json.Valid(stored) || string(stored) == string(staleResult) {
+		t.Fatalf("stored=%s err=%v", stored, err)
 	}
 }
 
