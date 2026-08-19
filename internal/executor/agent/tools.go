@@ -123,7 +123,17 @@ func (t *Toolbox) Execute(ctx context.Context, repository, name string, raw json
 		return nil, err
 	}
 	if len(encoded) > t.limits.MaxResultBytes {
-		return nil, errors.New("tool result exceeds configured byte limit")
+		// Keep the model loop bounded without persisting or forwarding an
+		// unbounded source/tool result. The summary is deliberately opaque: the
+		// model can request a narrower path or line range on its next round.
+		summary := map[string]any{"truncated": true, "result_bytes": len(encoded)}
+		encoded, err = json.Marshal(summary)
+		if err != nil {
+			return nil, err
+		}
+		if len(encoded) > t.limits.MaxResultBytes {
+			return nil, errors.New("tool result summary exceeds configured byte limit")
+		}
 	}
 	return encoded, nil
 }

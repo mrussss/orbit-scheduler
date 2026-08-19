@@ -79,9 +79,19 @@ func TestToolboxBoundsMatchesAndResultBytes(t *testing.T) {
 	if err != nil || strings.Count(string(result), `"path"`) != 2 || !strings.Contains(string(result), `"truncated":true`) {
 		t.Fatalf("result=%s err=%v", result, err)
 	}
-	tooSmall := newTestToolbox(t, root, ToolLimits{MaxFileBytes: 1024, MaxResultBytes: 10, MaxMatches: 2})
-	if _, err := tooSmall.Execute(context.Background(), "gateway", ToolReadFile, json.RawMessage(`{"path":"many.go"}`)); err == nil {
-		t.Fatal("expected result byte limit")
+	bounded := newTestToolbox(t, root, ToolLimits{MaxFileBytes: 1024, MaxResultBytes: 64, MaxMatches: 2})
+	boundedResult, err := bounded.Execute(context.Background(), "gateway", ToolReadFile, json.RawMessage(`{"path":"many.go"}`))
+	var summary map[string]any
+	if err != nil {
+		t.Fatalf("expected bounded result summary, result=%s err=%v", boundedResult, err)
+	}
+	if err := json.Unmarshal(boundedResult, &summary); err != nil {
+		t.Fatalf("invalid bounded result summary: %v", err)
+	}
+	truncated, truncatedOK := summary["truncated"].(bool)
+	resultBytes, bytesOK := summary["result_bytes"].(float64)
+	if !truncatedOK || !truncated || !bytesOK || resultBytes <= 64 {
+		t.Fatalf("expected bounded result summary, result=%s err=%v", boundedResult, err)
 	}
 }
 

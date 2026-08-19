@@ -32,7 +32,7 @@ The model loop is bounded to 3–6 model rounds and a separately bounded number 
 
 `GET /api/v1/tasks/:task_id/events` is a tenant-scoped SSE replay over PostgreSQL Trace. Events are `task_status`, `agent_step_started`, `agent_step_finished`, `tool_call`, `tool_result`, `final_result`, and `error`. `Last-Event-ID` uses `attempt:step:phase`. Reconnecting rebuilds step history from DB, while `final_result` is read from the terminal Task row; the stream is never a state authority. Disconnecting the HTTP client only ends that stream. Task cancellation still flows through lease renewal into the Worker Context and stops the Agent.
 
-Trace summaries contain counts, byte sizes, status, tool names, and repository aliases—not issue text, error-log text, source content, model output, API keys, or raw tool arguments/results.
+Trace summaries contain counts, byte sizes, status, tool names, and repository aliases—not issue text, error-log text, source content, model output, API keys, or raw tool arguments/results. If a Tool Result exceeds its transport bound, the model receives only a bounded `{truncated, result_bytes}` summary and can request a narrower read; raw oversized content is never forwarded or persisted.
 
 ## Gateway eval
 

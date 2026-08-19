@@ -32,6 +32,6 @@ The final local `make verify` completed successfully on 2026-08-19:
 - Agent/tool/eval/API/pgstore Race tests passed;
 - all ten pinned Gateway Fake Provider evals passed with file/evidence hits and no forbidden claim;
 - the complete MySQL Lab passed in 197.521 seconds and its three-round concurrency gate passed in 220.860 seconds;
-- the Python baseline's Pydantic, async tools, native-SDK-shape loop, and shared ten-case eval tests passed in a clean Python 3.12 container: 4 tests in 0.52 seconds.
+- the Python baseline's Pydantic, async tools, native-SDK-shape loop, bounded-result summary, and shared ten-case eval tests passed in a clean Python 3.12 container: 5 tests in 0.50 seconds.
 
 These are local correctness and reproducibility observations, not production performance, availability, cost, or SLO claims.

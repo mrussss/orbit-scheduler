@@ -55,7 +55,10 @@ class SafeRepositoryTools:
             raise ToolRejected(f"unknown tool {name!r}")
         encoded = json.dumps(result, separators=(",", ":"), ensure_ascii=False)
         if len(encoded.encode()) > self.max_result_bytes:
-            raise ToolRejected("tool result exceeds byte limit")
+            result = {"truncated": True, "result_bytes": len(encoded.encode())}
+            encoded = json.dumps(result, separators=(",", ":"), ensure_ascii=False)
+            if len(encoded.encode()) > self.max_result_bytes:
+                raise ToolRejected("tool result summary exceeds byte limit")
         return encoded
 
     @staticmethod
