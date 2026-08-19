@@ -1,0 +1,1 @@
+{"expected_files":["cpp-gateway/src/net/TcpServer.cpp","cpp-gateway/include/net/Connection.hpp"],"expected_evidence":["write_offset","MSG_NOSIGNAL"],"expected_category":"partial_write","forbidden_claims":["send means the peer consumed","automatic retry by the kernel completes the frame","ran the gateway"]}

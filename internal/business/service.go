@@ -42,6 +42,7 @@ type Repository interface {
 	ListTasks(context.Context, uuid.UUID, gormrepo.TaskFilter) ([]domain.Task, error)
 	GetTask(context.Context, uuid.UUID, uuid.UUID) (domain.Task, error)
 	ListAttempts(context.Context, uuid.UUID, uuid.UUID) ([]domain.TaskAttempt, error)
+	ListAgentSteps(context.Context, uuid.UUID, uuid.UUID) ([]domain.AgentStep, error)
 	ListJobs(context.Context, uuid.UUID, gormrepo.JobFilter) ([]domain.Job, []domain.JobCounts, error)
 	GetJob(context.Context, uuid.UUID, uuid.UUID) (domain.Job, domain.JobCounts, error)
 }
@@ -227,6 +228,17 @@ func (s *Service) ListAttempts(ctx context.Context, p Principal, id uuid.UUID) (
 		return nil, err
 	}
 	return s.repo.ListAttempts(ctx, p.ProjectID, id)
+}
+func (s *Service) ListAgentSteps(ctx context.Context, p Principal, id uuid.UUID) (domain.Task, []domain.AgentStep, error) {
+	task, err := s.repo.GetTask(ctx, p.ProjectID, id)
+	if err != nil {
+		return domain.Task{}, nil, err
+	}
+	if task.TaskType != "agent" {
+		return domain.Task{}, nil, ErrInvalidArgument
+	}
+	steps, err := s.repo.ListAgentSteps(ctx, p.ProjectID, id)
+	return task, steps, err
 }
 func (s *Service) CancelTask(ctx context.Context, p Principal, id uuid.UUID) error {
 	return s.scheduler.CancelTask(ctx, p.ProjectID, id)

@@ -76,6 +76,17 @@ type AuditEvent struct {
 	OccurredAt, ConsumedAt time.Time
 }
 
+type AgentStep struct {
+	TaskID                      uuid.UUID
+	AttemptNo, StepNo           int
+	WorkerInstanceID            uuid.UUID
+	Kind, ToolName, Status      string
+	InputSummary, OutputSummary json.RawMessage
+	StartedAt                   time.Time
+	FinishedAt                  *time.Time
+	CreatedAt, UpdatedAt        time.Time
+}
+
 type JobDerivedStatus string
 
 const (

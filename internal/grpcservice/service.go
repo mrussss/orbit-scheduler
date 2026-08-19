@@ -24,6 +24,7 @@ type Store interface {
 	HeartbeatWorker(context.Context, uuid.UUID, int, bool) error
 	SetWorkerDraining(context.Context, uuid.UUID, bool) error
 	WorkerServerTime(context.Context) (time.Time, error)
+	RecordAgentStep(context.Context, scheduler.RecordAgentStepRequest) error
 }
 type Service struct {
 	workerv1.UnimplementedWorkerServiceServer
@@ -169,6 +170,22 @@ func (s *Service) SetDraining(ctx context.Context, req *workerv1.SetDrainingRequ
 		return nil, mapError(err)
 	}
 	return &workerv1.SetDrainingResponse{ServerTimeUnixMs: now.UnixMilli()}, nil
+}
+
+func (s *Service) RecordAgentStep(ctx context.Context, req *workerv1.RecordAgentStepRequest) (*workerv1.RecordAgentStepResponse, error) {
+	taskID, workerID, err := parsePair(req.GetTaskId(), req.GetWorkerInstanceId())
+	if err != nil || req.GetAttemptNo() <= 0 || req.GetStepNo() <= 0 || len(req.GetInputSummaryJson()) > 8192 || len(req.GetOutputSummaryJson()) > 8192 || req.GetStartedAtUnixMs() <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "invalid agent step")
+	}
+	request := scheduler.RecordAgentStepRequest{TaskID: taskID, WorkerInstanceID: workerID, AttemptNo: int(req.GetAttemptNo()), StepNo: int(req.GetStepNo()), Kind: scheduler.AgentStepKind(req.GetKind()), ToolName: req.GetToolName(), InputSummary: req.GetInputSummaryJson(), OutputSummary: req.GetOutputSummaryJson(), Status: scheduler.AgentStepStatus(req.GetStatus()), StartedAt: time.UnixMilli(req.GetStartedAtUnixMs())}
+	if req.FinishedAtUnixMs != nil {
+		finished := time.UnixMilli(req.GetFinishedAtUnixMs())
+		request.FinishedAt = &finished
+	}
+	if err := s.store.RecordAgentStep(ctx, request); err != nil {
+		return nil, mapError(err)
+	}
+	return &workerv1.RecordAgentStepResponse{}, nil
 }
 func parsePair(task, worker string) (uuid.UUID, uuid.UUID, error) {
 	taskID, err := uuid.Parse(task)

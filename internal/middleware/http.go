@@ -56,6 +56,10 @@ func BodyLimit(max int64) gin.HandlerFunc {
 }
 func Timeout(duration time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if c.Request.Method == http.MethodGet && strings.HasSuffix(c.Request.URL.Path, "/events") {
+			c.Next()
+			return
+		}
 		ctx, cancel := context.WithTimeout(c.Request.Context(), duration)
 		defer cancel()
 		c.Request = c.Request.WithContext(ctx)

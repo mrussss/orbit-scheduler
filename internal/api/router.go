@@ -40,6 +40,7 @@ func NewRouter(logger *slog.Logger, service *business.Service, pinger Pinger, cf
 	tenant.POST("/tasks/:task_id/cancel", middleware.RequireScope("task:write"), handlers.cancelTask)
 	tenant.GET("/tasks/:task_id/attempts", middleware.RequireScope("task:read"), handlers.listAttempts)
 	tenant.GET("/tasks/:task_id/result", middleware.RequireScope("task:read"), handlers.getResult)
+	tenant.GET("/tasks/:task_id/events", middleware.RequireScope("task:read"), handlers.taskEvents)
 	tenant.POST("/jobs", middleware.RequireScope("job:write"), handlers.createJob)
 	tenant.GET("/jobs", middleware.RequireScope("job:read"), handlers.listJobs)
 	tenant.GET("/jobs/:job_id", middleware.RequireScope("job:read"), handlers.getJob)

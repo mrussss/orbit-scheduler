@@ -73,6 +73,32 @@ type ReportResult struct {
 
 type ReapResult struct{ Requeued, Failed, Canceled int }
 
+type AgentStepKind string
+type AgentStepStatus string
+
+const (
+	AgentStepModel AgentStepKind = "MODEL"
+	AgentStepTool  AgentStepKind = "TOOL"
+	AgentStepFinal AgentStepKind = "FINAL"
+	AgentStepError AgentStepKind = "ERROR"
+
+	AgentStepRunning   AgentStepStatus = "RUNNING"
+	AgentStepSucceeded AgentStepStatus = "SUCCEEDED"
+	AgentStepFailed    AgentStepStatus = "FAILED"
+)
+
+type RecordAgentStepRequest struct {
+	TaskID, WorkerInstanceID uuid.UUID
+	AttemptNo, StepNo        int
+	Kind                     AgentStepKind
+	ToolName                 string
+	InputSummary             json.RawMessage
+	OutputSummary            json.RawMessage
+	Status                   AgentStepStatus
+	StartedAt                time.Time
+	FinishedAt               *time.Time
+}
+
 type Store interface {
 	FetchTasks(context.Context, FetchRequest) ([]Assignment, error)
 	RenewLease(context.Context, RenewRequest) (RenewResult, error)

@@ -11,6 +11,7 @@ service WorkerService {
   rpc RenewLease(RenewLeaseRequest) returns (RenewLeaseResponse);
   rpc ReportResult(ReportResultRequest) returns (ReportResultResponse);
   rpc SetDraining(SetDrainingRequest) returns (SetDrainingResponse);
+  rpc RecordAgentStep(RecordAgentStepRequest) returns (RecordAgentStepResponse);
 }
 
 message RegisterWorkerRequest {
@@ -92,3 +93,18 @@ message ReportResultResponse {
 
 message SetDrainingRequest { string worker_instance_id = 1; bool draining = 2; }
 message SetDrainingResponse { int64 server_time_unix_ms = 1; }
+
+message RecordAgentStepRequest {
+  string task_id = 1;
+  string worker_instance_id = 2;
+  int32 attempt_no = 3;
+  int32 step_no = 4;
+  string kind = 5;
+  string tool_name = 6;
+  bytes input_summary_json = 7;
+  bytes output_summary_json = 8;
+  string status = 9;
+  int64 started_at_unix_ms = 10;
+  optional int64 finished_at_unix_ms = 11;
+}
+message RecordAgentStepResponse {}

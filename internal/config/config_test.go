@@ -65,6 +65,40 @@ func TestLoadWorkerLLMConfiguration(t *testing.T) {
 	}
 }
 
+func TestLoadWorkerAgentConfiguration(t *testing.T) {
+	t.Setenv("APP_ENV", "test")
+	t.Setenv("WORKER_TASK_TYPES", "agent")
+	t.Setenv("WORKER_CAPACITY", "3")
+	t.Setenv("LLM_BASE_URL", "http://127.0.0.1:8089/v1")
+	t.Setenv("LLM_API_KEY", "test-secret")
+	t.Setenv("LLM_ALLOWED_MODELS", "model-a")
+	t.Setenv("AGENT_MODEL", "model-a")
+	t.Setenv("AGENT_REPOSITORIES_JSON", `{"gateway":"/tmp/gateway-snapshot"}`)
+	t.Setenv("AGENT_MAX_CONCURRENCY", "2")
+	cfg, err := LoadWorker()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AgentExecutor.Repositories["gateway"] != "/tmp/gateway-snapshot" || cfg.AgentExecutor.MaxModelSteps != 4 || cfg.AgentExecutor.MaxConcurrency != 2 {
+		t.Fatalf("unexpected Agent config: %+v", cfg.AgentExecutor)
+	}
+}
+
+func TestLoadWorkerRejectsUnsafeAgentConfiguration(t *testing.T) {
+	t.Setenv("APP_ENV", "test")
+	t.Setenv("WORKER_TASK_TYPES", "agent")
+	t.Setenv("LLM_BASE_URL", "http://127.0.0.1:8089/v1")
+	t.Setenv("LLM_API_KEY", "test-secret")
+	t.Setenv("LLM_ALLOWED_MODELS", "model-a")
+	t.Setenv("AGENT_MODEL", "model-b")
+	t.Setenv("AGENT_REPOSITORIES_JSON", `{"../escape":"relative"}`)
+	t.Setenv("AGENT_MAX_MODEL_STEPS", "7")
+	_, err := LoadWorker()
+	if err == nil || !strings.Contains(err.Error(), "AGENT_MODEL") || !strings.Contains(err.Error(), "repository") || !strings.Contains(err.Error(), "AGENT_MAX_MODEL_STEPS") {
+		t.Fatalf("expected joined Agent validation errors, got %v", err)
+	}
+}
+
 func TestLoadWorkerRejectsInsecureLLMURLOutsideTest(t *testing.T) {
 	for _, appEnv := range []string{"development", "production"} {
 		t.Run(appEnv, func(t *testing.T) {

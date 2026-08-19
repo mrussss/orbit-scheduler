@@ -1,0 +1,1 @@
+{"expected_files":["go-control-plane/internal/app/handlers.go","go-control-plane/internal/app/http_foundation_test.go"],"expected_evidence":["METHOD_NOT_ALLOWED","UNAVAILABLE"],"expected_category":"http_classification","forbidden_claims":["retry every 4xx","404 means Redis outage","ran HTTP tests"]}

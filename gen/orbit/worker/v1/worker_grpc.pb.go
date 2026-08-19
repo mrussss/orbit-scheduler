@@ -19,12 +19,13 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	WorkerService_RegisterWorker_FullMethodName = "/orbit.worker.v1.WorkerService/RegisterWorker"
-	WorkerService_Heartbeat_FullMethodName      = "/orbit.worker.v1.WorkerService/Heartbeat"
-	WorkerService_FetchTasks_FullMethodName     = "/orbit.worker.v1.WorkerService/FetchTasks"
-	WorkerService_RenewLease_FullMethodName     = "/orbit.worker.v1.WorkerService/RenewLease"
-	WorkerService_ReportResult_FullMethodName   = "/orbit.worker.v1.WorkerService/ReportResult"
-	WorkerService_SetDraining_FullMethodName    = "/orbit.worker.v1.WorkerService/SetDraining"
+	WorkerService_RegisterWorker_FullMethodName  = "/orbit.worker.v1.WorkerService/RegisterWorker"
+	WorkerService_Heartbeat_FullMethodName       = "/orbit.worker.v1.WorkerService/Heartbeat"
+	WorkerService_FetchTasks_FullMethodName      = "/orbit.worker.v1.WorkerService/FetchTasks"
+	WorkerService_RenewLease_FullMethodName      = "/orbit.worker.v1.WorkerService/RenewLease"
+	WorkerService_ReportResult_FullMethodName    = "/orbit.worker.v1.WorkerService/ReportResult"
+	WorkerService_SetDraining_FullMethodName     = "/orbit.worker.v1.WorkerService/SetDraining"
+	WorkerService_RecordAgentStep_FullMethodName = "/orbit.worker.v1.WorkerService/RecordAgentStep"
 )
 
 // WorkerServiceClient is the client API for WorkerService service.
@@ -37,6 +38,7 @@ type WorkerServiceClient interface {
 	RenewLease(ctx context.Context, in *RenewLeaseRequest, opts ...grpc.CallOption) (*RenewLeaseResponse, error)
 	ReportResult(ctx context.Context, in *ReportResultRequest, opts ...grpc.CallOption) (*ReportResultResponse, error)
 	SetDraining(ctx context.Context, in *SetDrainingRequest, opts ...grpc.CallOption) (*SetDrainingResponse, error)
+	RecordAgentStep(ctx context.Context, in *RecordAgentStepRequest, opts ...grpc.CallOption) (*RecordAgentStepResponse, error)
 }
 
 type workerServiceClient struct {
@@ -107,6 +109,16 @@ func (c *workerServiceClient) SetDraining(ctx context.Context, in *SetDrainingRe
 	return out, nil
 }
 
+func (c *workerServiceClient) RecordAgentStep(ctx context.Context, in *RecordAgentStepRequest, opts ...grpc.CallOption) (*RecordAgentStepResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RecordAgentStepResponse)
+	err := c.cc.Invoke(ctx, WorkerService_RecordAgentStep_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WorkerServiceServer is the server API for WorkerService service.
 // All implementations must embed UnimplementedWorkerServiceServer
 // for forward compatibility.
@@ -117,6 +129,7 @@ type WorkerServiceServer interface {
 	RenewLease(context.Context, *RenewLeaseRequest) (*RenewLeaseResponse, error)
 	ReportResult(context.Context, *ReportResultRequest) (*ReportResultResponse, error)
 	SetDraining(context.Context, *SetDrainingRequest) (*SetDrainingResponse, error)
+	RecordAgentStep(context.Context, *RecordAgentStepRequest) (*RecordAgentStepResponse, error)
 	mustEmbedUnimplementedWorkerServiceServer()
 }
 
@@ -144,6 +157,9 @@ func (UnimplementedWorkerServiceServer) ReportResult(context.Context, *ReportRes
 }
 func (UnimplementedWorkerServiceServer) SetDraining(context.Context, *SetDrainingRequest) (*SetDrainingResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetDraining not implemented")
+}
+func (UnimplementedWorkerServiceServer) RecordAgentStep(context.Context, *RecordAgentStepRequest) (*RecordAgentStepResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RecordAgentStep not implemented")
 }
 func (UnimplementedWorkerServiceServer) mustEmbedUnimplementedWorkerServiceServer() {}
 func (UnimplementedWorkerServiceServer) testEmbeddedByValue()                       {}
@@ -274,6 +290,24 @@ func _WorkerService_SetDraining_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WorkerService_RecordAgentStep_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RecordAgentStepRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceServer).RecordAgentStep(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerService_RecordAgentStep_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceServer).RecordAgentStep(ctx, req.(*RecordAgentStepRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WorkerService_ServiceDesc is the grpc.ServiceDesc for WorkerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -304,6 +338,10 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetDraining",
 			Handler:    _WorkerService_SetDraining_Handler,
+		},
+		{
+			MethodName: "RecordAgentStep",
+			Handler:    _WorkerService_RecordAgentStep_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

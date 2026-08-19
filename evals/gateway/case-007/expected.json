@@ -1,0 +1,1 @@
+{"expected_files":["go-control-plane/internal/app/handlers.go","docs/failure_cases.md"],"expected_evidence":["AUTH_UNAVAILABLE","ServiceUnavailable"],"expected_category":"dependency_unavailable","forbidden_claims":["fail open","switch to MemoryStore","increment credential failure"]}

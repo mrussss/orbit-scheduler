@@ -97,52 +97,162 @@ type openAIResponse struct {
 	Usage *Usage `json:"usage"`
 }
 
+type openAIToolDefinition struct {
+	Type     string `json:"type"`
+	Function struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		Parameters  json.RawMessage `json:"parameters"`
+	} `json:"function"`
+}
+
+type openAIToolMessage struct {
+	Role       string           `json:"role"`
+	Content    string           `json:"content,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+}
+
+type openAIToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+type openAIToolRequest struct {
+	Model               string                 `json:"model"`
+	Messages            []openAIToolMessage    `json:"messages"`
+	Tools               []openAIToolDefinition `json:"tools"`
+	ToolChoice          string                 `json:"tool_choice"`
+	Temperature         *float64               `json:"temperature,omitempty"`
+	MaxCompletionTokens int                    `json:"max_completion_tokens"`
+	Stream              bool                   `json:"stream"`
+}
+
+type openAIToolResponse struct {
+	Model   string `json:"model"`
+	Choices []struct {
+		Message struct {
+			Content   string           `json:"content"`
+			ToolCalls []openAIToolCall `json:"tool_calls"`
+		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *Usage `json:"usage"`
+}
+
 func (p *OpenAICompatible) Generate(ctx context.Context, input Request) (Response, error) {
 	payload := openAIRequest{Model: input.Model, Messages: input.Messages, Temperature: input.Temperature, MaxCompletionTokens: input.MaxOutputTokens, Stream: false}
 	if input.ResponseFormat != "" {
 		payload.ResponseFormat = map[string]any{"type": input.ResponseFormat}
 	}
+	responseBody, statusCode, err := p.post(ctx, payload)
+	if err != nil {
+		return Response{}, err
+	}
+	var decoded openAIResponse
+	if err := json.Unmarshal(responseBody, &decoded); err != nil {
+		return Response{}, &ProviderError{Kind: ErrorInvalidResponse, StatusCode: statusCode, Retryable: true, Cause: err}
+	}
+	if decoded.Model == "" || len(decoded.Choices) == 0 || decoded.Usage == nil {
+		return Response{}, &ProviderError{Kind: ErrorInvalidResponse, StatusCode: statusCode, Retryable: true}
+	}
+	if decoded.Usage.PromptTokens < 0 || decoded.Usage.CompletionTokens < 0 || decoded.Usage.TotalTokens < 0 {
+		return Response{}, &ProviderError{Kind: ErrorInvalidResponse, StatusCode: statusCode, Retryable: true}
+	}
+	choice := decoded.Choices[0]
+	if choice.FinishReason == "" {
+		return Response{}, &ProviderError{Kind: ErrorInvalidResponse, StatusCode: statusCode, Retryable: true}
+	}
+	return Response{Model: decoded.Model, Content: choice.Message.Content, FinishReason: choice.FinishReason, Usage: *decoded.Usage}, nil
+}
+
+func (p *OpenAICompatible) GenerateWithTools(ctx context.Context, input ToolRequest) (ToolResponse, error) {
+	if len(input.Tools) == 0 || len(input.Messages) == 0 || input.MaxOutputTokens <= 0 {
+		return ToolResponse{}, &ProviderError{Kind: ErrorInvalidRequest}
+	}
+	payload := openAIToolRequest{Model: input.Model, ToolChoice: "auto", Temperature: input.Temperature, MaxCompletionTokens: input.MaxOutputTokens, Stream: false}
+	payload.Tools = make([]openAIToolDefinition, len(input.Tools))
+	for index, tool := range input.Tools {
+		if tool.Name == "" || len(tool.Parameters) == 0 || !json.Valid(tool.Parameters) {
+			return ToolResponse{}, &ProviderError{Kind: ErrorInvalidRequest}
+		}
+		payload.Tools[index].Type = "function"
+		payload.Tools[index].Function.Name = tool.Name
+		payload.Tools[index].Function.Description = tool.Description
+		payload.Tools[index].Function.Parameters = tool.Parameters
+	}
+	payload.Messages = make([]openAIToolMessage, len(input.Messages))
+	for index, message := range input.Messages {
+		wire := openAIToolMessage{Role: message.Role, Content: message.Content, ToolCallID: message.ToolCallID}
+		wire.ToolCalls = make([]openAIToolCall, len(message.ToolCalls))
+		for callIndex, call := range message.ToolCalls {
+			wire.ToolCalls[callIndex].ID = call.ID
+			wire.ToolCalls[callIndex].Type = "function"
+			wire.ToolCalls[callIndex].Function.Name = call.Name
+			if len(call.Arguments) == 0 || !json.Valid(call.Arguments) {
+				return ToolResponse{}, &ProviderError{Kind: ErrorInvalidRequest}
+			}
+			wire.ToolCalls[callIndex].Function.Arguments = string(call.Arguments)
+		}
+		payload.Messages[index] = wire
+	}
+	responseBody, statusCode, err := p.post(ctx, payload)
+	if err != nil {
+		return ToolResponse{}, err
+	}
+	var decoded openAIToolResponse
+	if err := json.Unmarshal(responseBody, &decoded); err != nil {
+		return ToolResponse{}, &ProviderError{Kind: ErrorInvalidResponse, StatusCode: statusCode, Retryable: true, Cause: err}
+	}
+	if decoded.Model == "" || len(decoded.Choices) == 0 || decoded.Usage == nil || decoded.Usage.PromptTokens < 0 || decoded.Usage.CompletionTokens < 0 || decoded.Usage.TotalTokens < 0 {
+		return ToolResponse{}, &ProviderError{Kind: ErrorInvalidResponse, StatusCode: statusCode, Retryable: true}
+	}
+	choice := decoded.Choices[0]
+	if choice.FinishReason == "" || (choice.Message.Content == "" && len(choice.Message.ToolCalls) == 0) {
+		return ToolResponse{}, &ProviderError{Kind: ErrorInvalidResponse, StatusCode: statusCode, Retryable: true}
+	}
+	result := ToolResponse{Model: decoded.Model, Content: choice.Message.Content, FinishReason: choice.FinishReason, Usage: *decoded.Usage, ToolCalls: make([]ToolCall, len(choice.Message.ToolCalls))}
+	for index, call := range choice.Message.ToolCalls {
+		arguments := json.RawMessage(call.Function.Arguments)
+		if call.ID == "" || call.Type != "function" || call.Function.Name == "" || len(arguments) == 0 || !json.Valid(arguments) {
+			return ToolResponse{}, &ProviderError{Kind: ErrorInvalidResponse, StatusCode: statusCode, Retryable: true}
+		}
+		result.ToolCalls[index] = ToolCall{ID: call.ID, Name: call.Function.Name, Arguments: arguments}
+	}
+	return result, nil
+}
+
+func (p *OpenAICompatible) post(ctx context.Context, payload any) ([]byte, int, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return Response{}, &ProviderError{Kind: ErrorInvalidRequest, Cause: err}
+		return nil, 0, &ProviderError{Kind: ErrorInvalidRequest, Cause: err}
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint, bytes.NewReader(body))
 	if err != nil {
-		return Response{}, &ProviderError{Kind: ErrorInvalidRequest, Cause: err}
+		return nil, 0, &ProviderError{Kind: ErrorInvalidRequest, Cause: err}
 	}
 	request.Header.Set("Authorization", "Bearer "+p.apiKey)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := p.client.Do(request)
 	if err != nil {
-		return Response{}, classifyTransportError(ctx, err)
+		return nil, 0, classifyTransportError(ctx, err)
 	}
 	defer response.Body.Close()
-	limited := io.LimitReader(response.Body, p.maxResponseBytes+1)
-	responseBody, err := io.ReadAll(limited)
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, p.maxResponseBytes+1))
 	if err != nil {
-		return Response{}, &ProviderError{Kind: ErrorTransport, Retryable: true, Cause: err}
+		return nil, response.StatusCode, &ProviderError{Kind: ErrorTransport, Retryable: true, Cause: err}
 	}
 	if int64(len(responseBody)) > p.maxResponseBytes {
-		return Response{}, &ProviderError{Kind: ErrorResponseTooLarge, StatusCode: response.StatusCode}
+		return nil, response.StatusCode, &ProviderError{Kind: ErrorResponseTooLarge, StatusCode: response.StatusCode}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode > 299 {
-		return Response{}, classifyStatus(response.StatusCode)
+		return nil, response.StatusCode, classifyStatus(response.StatusCode)
 	}
-	var decoded openAIResponse
-	if err := json.Unmarshal(responseBody, &decoded); err != nil {
-		return Response{}, &ProviderError{Kind: ErrorInvalidResponse, StatusCode: response.StatusCode, Retryable: true, Cause: err}
-	}
-	if decoded.Model == "" || len(decoded.Choices) == 0 || decoded.Usage == nil {
-		return Response{}, &ProviderError{Kind: ErrorInvalidResponse, StatusCode: response.StatusCode, Retryable: true}
-	}
-	if decoded.Usage.PromptTokens < 0 || decoded.Usage.CompletionTokens < 0 || decoded.Usage.TotalTokens < 0 {
-		return Response{}, &ProviderError{Kind: ErrorInvalidResponse, StatusCode: response.StatusCode, Retryable: true}
-	}
-	choice := decoded.Choices[0]
-	if choice.FinishReason == "" {
-		return Response{}, &ProviderError{Kind: ErrorInvalidResponse, StatusCode: response.StatusCode, Retryable: true}
-	}
-	return Response{Model: decoded.Model, Content: choice.Message.Content, FinishReason: choice.FinishReason, Usage: *decoded.Usage}, nil
+	return responseBody, response.StatusCode, nil
 }
 
 func (p *OpenAICompatible) CloseIdleConnections() { p.client.CloseIdleConnections() }

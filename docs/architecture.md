@@ -12,8 +12,8 @@ flowchart TB
         Server[orbit-server\nHTTP API + gRPC scheduler]
         Worker1[orbit-worker A]
         Worker2[orbit-worker B]
-        Executor1[Mock / HTTP / LLM executor]
-        Executor2[Mock / HTTP / LLM executor]
+        Executor1[Mock / HTTP / LLM / Agent executor]
+        Executor2[Mock / HTTP / LLM / Agent executor]
         Metrics[Server + Worker Prometheus endpoints]
 
         Worker1 --> Executor1
@@ -45,6 +45,12 @@ flow.
 The LLM Provider is an external execution dependency, never a state authority.
 It cannot read or modify Scheduler storage. LLM requests remain inside the
 Worker's existing capacity, lease, deadline, cancellation, and report flow.
+
+The Agent reuses that Provider transport but owns a separate server-defined
+protocol. Its only data access is three bounded read-only tools over configured
+source snapshots. Every Agent step is written through gRPC to PostgreSQL and is
+fenced by the current Worker, Attempt, and live Lease before HTTP SSE can replay
+it. The SSE connection never controls execution state.
 
 ## Data-access split
 

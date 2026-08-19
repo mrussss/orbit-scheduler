@@ -1,0 +1,1 @@
+{"expected_files":["cpp-gateway/src/net/TcpServer.cpp","docs/failure_cases.md"],"expected_evidence":["response queue rejected","conn_id"],"expected_category":"response_overload","forbidden_claims":["silently drop","close every connection","ran the queue fault"]}

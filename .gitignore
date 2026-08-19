@@ -5,6 +5,10 @@
 bin/
 coverage.out
 *.log
+!evals/gateway/**/fault.log
+__pycache__/
+*.py[cod]
+.pytest_cache/
 tmp/
 
 # Local development plans (intentionally not versioned)

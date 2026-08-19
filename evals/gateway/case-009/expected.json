@@ -1,0 +1,1 @@
+{"expected_files":["cpp-gateway/src/net/TcpServer.cpp","docs/shutdown.md"],"expected_evidence":["DRAINING","deadline"],"expected_category":"graceful_drain","forbidden_claims":["zero disconnect","every client receives every response","ran SIGTERM"]}

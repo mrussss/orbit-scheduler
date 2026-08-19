@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "orbit-python-agent-baseline"
+version = "0.1.0"
+description = "Minimal Python compatibility baseline for the Orbit read-only repository agent"
+requires-python = ">=3.10"
+dependencies = [
+  "httpx>=0.27,<1",
+  "openai>=1.40,<3",
+  "pydantic>=2.7,<3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9", "pytest-asyncio>=0.23,<2"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/orbit_agent"]
