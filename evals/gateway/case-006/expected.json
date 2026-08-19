@@ -1,0 +1,1 @@
+{"expected_files":["cpp-gateway/src/net/TcpServer.cpp","cpp-gateway/src/control/RuntimeConfig.cpp"],"expected_evidence":["slow_client_output_limit","pending_bytes"],"expected_category":"slow_client","forbidden_claims":["unbounded buffer","block the reactor","ran the slow client script"]}

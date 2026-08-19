@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,59 @@ import (
 	"testing"
 	"time"
 )
+
+func TestOpenAICompatibleToolCallingRoundTrip(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		tools, ok := payload["tools"].([]any)
+		if !ok || len(tools) != 3 || payload["tool_choice"] != "auto" || payload["stream"] != false || payload["max_completion_tokens"] != float64(200) {
+			t.Fatalf("unexpected tool request: %#v", payload)
+		}
+		messages := payload["messages"].([]any)
+		last := messages[len(messages)-1].(map[string]any)
+		if last["role"] != "tool" || last["tool_call_id"] != "call-0" || last["content"] != `{"matches":[]}` {
+			t.Fatalf("unexpected follow-up message: %#v", last)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"model":"model-a","choices":[{"message":{"content":"","tool_calls":[{"id":"call-1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"main.go\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}`)
+	}))
+	defer server.Close()
+	provider := newTestProvider(t, server.URL, 4096)
+	response, err := provider.GenerateWithTools(context.Background(), ToolRequest{
+		Model: "model-a", MaxOutputTokens: 200,
+		Tools: []ToolDefinition{
+			{Name: "search_code", Parameters: json.RawMessage(`{"type":"object"}`)},
+			{Name: "read_file", Parameters: json.RawMessage(`{"type":"object"}`)},
+			{Name: "read_docs", Parameters: json.RawMessage(`{"type":"object"}`)},
+		},
+		Messages: []ToolMessage{
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call-0", Name: "search_code", Arguments: json.RawMessage(`{"query":"main"}`)}}},
+			{Role: "tool", ToolCallID: "call-0", Content: `{"matches":[]}`},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.ToolCalls) != 1 || response.ToolCalls[0].Name != "read_file" || string(response.ToolCalls[0].Arguments) != `{"path":"main.go"}` || response.Usage.TotalTokens != 15 {
+		t.Fatalf("unexpected tool response: %+v", response)
+	}
+}
+
+func TestOpenAICompatibleRejectsMalformedToolResponses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(writer, `{"model":"model-a","choices":[{"message":{"tool_calls":[{"id":"call-1","type":"function","function":{"name":"read_file","arguments":"not-json"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer server.Close()
+	provider := newTestProvider(t, server.URL, 4096)
+	_, err := provider.GenerateWithTools(context.Background(), ToolRequest{Model: "model-a", MaxOutputTokens: 10, Messages: []ToolMessage{{Role: "user", Content: "x"}}, Tools: []ToolDefinition{{Name: "read_file", Parameters: json.RawMessage(`{"type":"object"}`)}}})
+	providerError, ok := AsProviderError(err)
+	if !ok || providerError.Kind != ErrorInvalidResponse {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
 
 func TestOpenAICompatibleSuccess(t *testing.T) {
 	var requests atomic.Int32

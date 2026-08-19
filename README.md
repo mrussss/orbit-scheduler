@@ -4,8 +4,8 @@
 
 Orbit Scheduler is a Go and PostgreSQL distributed task execution platform. It
 demonstrates atomic task claiming, lease fencing, idempotent APIs, bounded
-workers, secure HTTP and reliable OpenAI-compatible LLM execution, and graceful
-shutdown with reproducible integration evidence.
+workers, secure HTTP, reliable OpenAI-compatible LLM execution, and a fenced
+read-only repository Agent with reproducible integration evidence.
 
 PostgreSQL is the only production source of truth. The repository also contains
 an isolated MySQL 8 engineering lab for index, isolation, deadlock, idempotency,
@@ -36,8 +36,8 @@ flowchart LR
     WorkerA[Worker A] -->|Fetch / Renew / Report\ngRPC| Scheduler[Scheduler service\npgx transactions]
     WorkerB[Worker B] -->|Fetch / Renew / Report\ngRPC| Scheduler
     Scheduler --> PG
-    WorkerA --> ExecA[Mock / HTTP / LLM executor]
-    WorkerB --> ExecB[Mock / HTTP / LLM executor]
+    WorkerA --> ExecA[Mock / HTTP / LLM / Agent executor]
+    WorkerB --> ExecB[Mock / HTTP / LLM / Agent executor]
     API --> Metrics[Prometheus metrics]
 
     Lab[MySQL 8 engineering lab] -. isolated module .-> MySQL[(MySQL 8 / InnoDB)]
@@ -87,6 +87,19 @@ The complete component and transaction diagrams are in
   server-side credentials, model allowlisting, Provider concurrency, error
   classification, usage/cost accounting, and Context cancellation.
 - Low-cardinality Scheduler, Worker, database pool, executor, and LLM metrics.
+
+### Read-only repository Agent
+
+- Native OpenAI-compatible Tool Calling loop bounded to 3–6 model rounds.
+- Exactly three server-owned tools: `search_code`, `read_file`, and `read_docs`.
+- Server allowlisted fixed snapshots with traversal, absolute-path, symlink,
+  secret-file, binary, file/result-size, match-count, and schema boundaries.
+- PostgreSQL `AgentStep` Trace fenced by Worker, Attempt, and live Lease; stale
+  Attempts cannot append or finish authoritative Trace rows.
+- Authenticated DB-backed SSE replay with `Last-Event-ID`; stream disconnect is
+  independent of Task cancellation.
+- Ten pinned Gateway fault fixtures with deterministic evidence/forbidden-claim
+  scoring and a paid-API-free Fake Provider smoke.
 
 ### Reproducible evidence
 
@@ -164,6 +177,9 @@ make test-integration        # real PostgreSQL Testcontainers tests
 make smoke-phase5            # black-box HTTP → gRPC → Worker flow
 make test-llm-executor       # LLM Provider/Executor/Worker Race tests
 make smoke-llm               # Fake Provider retry + SIGTERM recovery flow
+make test-agent              # Agent/tool/Trace/SSE/eval Race tests
+make smoke-agent-eval        # ten pinned Gateway evals with Fake Provider
+cd labs/python-agent-baseline && pytest -q  # Python compatibility baseline
 make test-mysql-lab          # complete isolated MySQL 8 lab
 make test-mysql-concurrency  # repeated deadlock/claim/idempotency tests
 make verify                  # complete release verification
@@ -206,6 +222,30 @@ unbounded internal retry loop.
 Run `make smoke-llm` for the local Fake Provider demonstration. See
 [`docs/llm-executor.md`](docs/llm-executor.md) for the full contract.
 
+## Read-only Agent tasks
+
+Add `agent` to `WORKER_TASK_TYPES`, keep the normal `LLM_*` Provider settings,
+and configure `AGENT_REPOSITORIES_JSON` with absolute fixed-snapshot paths. A
+client selects only the alias and supplies the issue evidence:
+
+```json
+{
+  "task_type": "agent",
+  "payload": {
+    "repository_root": "gateway",
+    "issue": "AUTH queue saturation must not stall ECHO",
+    "error_log": "auth_queue push FULL"
+  },
+  "execution_timeout_ms": 120000,
+  "max_attempts": 3
+}
+```
+
+Trace can be replayed from `GET /api/v1/tasks/:task_id/events`. Run
+`make smoke-agent-eval` with the sibling pinned `gateway-system` snapshot. See
+[`docs/agent-v0.3.md`](docs/agent-v0.3.md) for the complete trust, Trace, SSE,
+reliability, eval, and Python-lab contracts.
+
 ## MySQL 8 engineering lab
 
 The lab lives in `experiments/mysql8` as an independent Go module and covers:
@@ -234,9 +274,10 @@ See [`docs/mysql8-engineering-lab.md`](docs/mysql8-engineering-lab.md) and
   exposure requires authenticated TLS or mTLS.
 - HTTP executor application checks complement, but do not replace, egress
   firewalling and cloud metadata protections.
-- LLM execution is non-streaming and does not provide RAG, MCP, Memory,
-  multi-agent workflows, or Tool Calling. API keys and routing are process
-  configuration, never task input.
+- Generic `llm` execution remains non-streaming and tool-free. Only the
+  separate `agent` task can use the three server-owned read-only tools. Neither
+  path provides RAG, MCP, Memory, write tools, Shell, planner, or multi-agent
+  workflows. API keys and routing are process configuration, never task input.
 - LLM messages and generated content are persisted as Task payload and Result;
   clients are responsible for submitting data compatible with their retention
   policy. Prompt and response content are not emitted as logs or metric labels.
@@ -259,11 +300,13 @@ See [`docs/mysql8-engineering-lab.md`](docs/mysql8-engineering-lab.md) and
 - [LLM failure and retry semantics](docs/llm-failure-and-retry.md)
 - [LLM security boundaries](docs/llm-security-boundaries.md)
 - [LLM performance and fault evidence](docs/llm-performance-and-fault-evidence.md)
+- [Read-only Agent v0.3](docs/agent-v0.3.md)
+- [v0.3.0 Agent milestone](docs/release-v0.3.0.md)
 
 ## Repository status
 
-`v0.2.0` is the verified Phase 5 plus MySQL Lab baseline with the Reliable LLM
-Executor. The complete Fake Provider, PostgreSQL integration, black-box smoke,
-Race, build, and MySQL gates are recorded in the release verification document.
-Kafka Relay, Audit Consumer, DLQ, Tool Calling, and broad distributed load/fault
-work remain optional extensions rather than delivered claims.
+The v0.3 branch extends the verified `v0.2.0` baseline with the bounded
+read-only Agent vertical slice, fenced Trace/SSE replay, fixed Gateway evals,
+and Python compatibility lab. Kafka Relay, Audit Consumer, DLQ, RAG, write
+tools, and broad distributed load/fault work remain optional extensions rather
+than delivered claims.

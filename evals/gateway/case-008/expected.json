@@ -1,0 +1,1 @@
+{"expected_files":["go-control-plane/internal/app/redis_store.go","go-control-plane/internal/app/handlers.go"],"expected_evidence":["If-Match","config version conflict"],"expected_category":"config_cas","forbidden_claims":["last write wins","Redis pipeline is atomic","ran Redis"]}

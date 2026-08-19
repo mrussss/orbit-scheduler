@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -29,6 +30,47 @@ type Response struct {
 
 type Provider interface {
 	Generate(context.Context, Request) (Response, error)
+}
+
+// ToolDefinition and ToolMessage are server-owned Agent protocol types. They
+// are deliberately separate from the tenant-authored LLM Payload contract.
+type ToolDefinition struct {
+	Name        string
+	Description string
+	Parameters  json.RawMessage
+}
+
+type ToolCall struct {
+	ID        string
+	Name      string
+	Arguments json.RawMessage
+}
+
+type ToolMessage struct {
+	Role       string
+	Content    string
+	ToolCallID string
+	ToolCalls  []ToolCall
+}
+
+type ToolRequest struct {
+	Model           string
+	Messages        []ToolMessage
+	Tools           []ToolDefinition
+	Temperature     *float64
+	MaxOutputTokens int
+}
+
+type ToolResponse struct {
+	Model        string
+	Content      string
+	ToolCalls    []ToolCall
+	FinishReason string
+	Usage        Usage
+}
+
+type ToolProvider interface {
+	GenerateWithTools(context.Context, ToolRequest) (ToolResponse, error)
 }
 
 type ErrorKind string

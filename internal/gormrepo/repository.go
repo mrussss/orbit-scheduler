@@ -313,3 +313,27 @@ func (r *Repository) ListAttempts(ctx context.Context, projectID, taskID uuid.UU
 	}
 	return out, nil
 }
+
+type agentStepRow struct {
+	TaskID                      uuid.UUID
+	AttemptNo, StepNo           int
+	WorkerInstanceID            uuid.UUID
+	Kind, ToolName, Status      string
+	InputSummary, OutputSummary json.RawMessage
+	StartedAt                   time.Time
+	FinishedAt                  *time.Time
+	CreatedAt, UpdatedAt        time.Time
+}
+
+func (r *Repository) ListAgentSteps(ctx context.Context, projectID, taskID uuid.UUID) ([]domain.AgentStep, error) {
+	var rows []agentStepRow
+	err := r.db.WithContext(ctx).Table("agent_steps s").Select("s.*").Joins("JOIN tasks t ON t.id=s.task_id").Where("t.project_id=? AND s.task_id=?", projectID, taskID).Order("s.attempt_no ASC,s.step_no ASC").Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	steps := make([]domain.AgentStep, len(rows))
+	for i, row := range rows {
+		steps[i] = domain.AgentStep{TaskID: row.TaskID, AttemptNo: row.AttemptNo, StepNo: row.StepNo, WorkerInstanceID: row.WorkerInstanceID, Kind: row.Kind, ToolName: row.ToolName, InputSummary: row.InputSummary, OutputSummary: row.OutputSummary, Status: row.Status, StartedAt: row.StartedAt, FinishedAt: row.FinishedAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	}
+	return steps, nil
+}

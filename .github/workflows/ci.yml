@@ -58,6 +58,40 @@ jobs:
       - run: make test-llm-executor
       - run: make smoke-llm
 
+  agent-fake-provider:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.22.x"
+          cache: true
+      - name: Check out pinned Gateway snapshot
+        uses: actions/checkout@v6
+        with:
+          repository: mrussss/gateway-system
+          ref: 363a403774859dd597160b810a13bd0e13b0fab1
+          path: gateway-system
+      - run: go mod download
+      - run: make test-agent
+      - run: go run ./cmd/orbit-agent-eval -fake-provider=true -repository ./gateway-system
+
+  python-agent-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: labs/python-agent-baseline/pyproject.toml
+      - working-directory: labs/python-agent-baseline
+        run: pip install -e '.[test]'
+      - working-directory: labs/python-agent-baseline
+        run: pytest -q
+
   mysql8-lab:
     runs-on: ubuntu-latest
     timeout-minutes: 20

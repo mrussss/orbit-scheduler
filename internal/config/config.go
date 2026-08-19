@@ -7,29 +7,31 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 )
 
 type Config struct {
-	AppEnv       string
-	LogLevel     string
-	HTTPAddr     string
-	GRPCAddr     string
-	MetricsAddr  string
-	DatabaseURL  string
-	TokenPepper  string
-	AdminToken   string
-	KafkaBrokers []string
-	TaskTopic    string
-	TaskDLQTopic string
-	GORM         SQLPool
-	PGX          PGXPool
-	HTTP         HTTP
-	Worker       Worker
-	HTTPExecutor HTTPExecutor
-	LLMExecutor  LLMExecutor
+	AppEnv        string
+	LogLevel      string
+	HTTPAddr      string
+	GRPCAddr      string
+	MetricsAddr   string
+	DatabaseURL   string
+	TokenPepper   string
+	AdminToken    string
+	KafkaBrokers  []string
+	TaskTopic     string
+	TaskDLQTopic  string
+	GORM          SQLPool
+	PGX           PGXPool
+	HTTP          HTTP
+	Worker        Worker
+	HTTPExecutor  HTTPExecutor
+	LLMExecutor   LLMExecutor
+	AgentExecutor AgentExecutor
 }
 
 type SQLPool struct {
@@ -82,6 +84,14 @@ type LLMExecutor struct {
 	CostTable                        map[string]LLMCost
 	LogContent, ToolCallingEnabled   bool
 	MaxToolRounds                    int
+}
+
+type AgentExecutor struct {
+	Repositories                                map[string]string
+	Model                                       string
+	MaxIssueBytes, MaxFileBytes, MaxResultBytes int
+	MaxSearchMatches, MaxModelSteps             int
+	MaxToolCalls, MaxConcurrency                int
 }
 
 type LLMCost struct {
@@ -222,6 +232,40 @@ func load() (Config, error) {
 			return Config{}, errors.New("LLM_COST_TABLE_JSON must contain exactly one JSON object")
 		}
 	}
+	cfg.AgentExecutor.Repositories = map[string]string{}
+	if raw := strings.TrimSpace(os.Getenv("AGENT_REPOSITORIES_JSON")); raw != "" {
+		decoder := json.NewDecoder(strings.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&cfg.AgentExecutor.Repositories); err != nil {
+			return Config{}, fmt.Errorf("AGENT_REPOSITORIES_JSON: %w", err)
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			return Config{}, errors.New("AGENT_REPOSITORIES_JSON must contain exactly one JSON object")
+		}
+	}
+	cfg.AgentExecutor.Model = strings.TrimSpace(os.Getenv("AGENT_MODEL"))
+	if cfg.AgentExecutor.MaxIssueBytes, err = intEnv("AGENT_MAX_ISSUE_BYTES", 64<<10); err != nil {
+		return Config{}, err
+	}
+	if cfg.AgentExecutor.MaxFileBytes, err = intEnv("AGENT_MAX_FILE_BYTES", 256<<10); err != nil {
+		return Config{}, err
+	}
+	if cfg.AgentExecutor.MaxResultBytes, err = intEnv("AGENT_MAX_TOOL_RESULT_BYTES", 128<<10); err != nil {
+		return Config{}, err
+	}
+	if cfg.AgentExecutor.MaxSearchMatches, err = intEnv("AGENT_MAX_SEARCH_MATCHES", 100); err != nil {
+		return Config{}, err
+	}
+	if cfg.AgentExecutor.MaxModelSteps, err = intEnv("AGENT_MAX_MODEL_STEPS", 4); err != nil {
+		return Config{}, err
+	}
+	if cfg.AgentExecutor.MaxToolCalls, err = intEnv("AGENT_MAX_TOOL_CALLS", 12); err != nil {
+		return Config{}, err
+	}
+	if cfg.AgentExecutor.MaxConcurrency, err = intEnv("AGENT_MAX_CONCURRENCY", 2); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }
 
@@ -250,10 +294,42 @@ func LoadWorker() (Config, error) {
 	if contains(cfg.Worker.TaskTypes, "http") && (len(cfg.HTTPExecutor.AllowedHosts) == 0 || cfg.HTTPExecutor.RequestTimeout <= 0 || cfg.HTTPExecutor.MaxRequestBytes <= 0 || cfg.HTTPExecutor.MaxResponseBytes <= 0) {
 		errs = append(errs, errors.New("invalid HTTP executor configuration"))
 	}
-	if contains(cfg.Worker.TaskTypes, "llm") {
+	if contains(cfg.Worker.TaskTypes, "llm") || contains(cfg.Worker.TaskTypes, "agent") {
 		errs = append(errs, cfg.validateLLM()...)
 	}
+	if contains(cfg.Worker.TaskTypes, "llm") && cfg.LLMExecutor.MaxConcurrency > cfg.Worker.Capacity {
+		errs = append(errs, errors.New("LLM_MAX_CONCURRENCY cannot exceed WORKER_CAPACITY"))
+	}
+	if contains(cfg.Worker.TaskTypes, "agent") {
+		errs = append(errs, cfg.validateAgent()...)
+	}
 	return cfg, errors.Join(errs...)
+}
+
+func (c Config) validateAgent() []error {
+	var errs []error
+	agent := c.AgentExecutor
+	if len(agent.Repositories) == 0 {
+		errs = append(errs, errors.New("AGENT_REPOSITORIES_JSON must contain at least one repository"))
+	}
+	for alias, root := range agent.Repositories {
+		if alias == "" || strings.ContainsAny(alias, `/\\`) || !filepath.IsAbs(root) {
+			errs = append(errs, fmt.Errorf("invalid agent repository %q", alias))
+		}
+	}
+	if agent.Model == "" || !contains(c.LLMExecutor.AllowedModels, agent.Model) {
+		errs = append(errs, errors.New("AGENT_MODEL must be in LLM_ALLOWED_MODELS"))
+	}
+	if agent.MaxIssueBytes <= 0 || agent.MaxFileBytes <= 0 || agent.MaxResultBytes <= 0 || agent.MaxSearchMatches <= 0 || agent.MaxToolCalls <= 0 || agent.MaxConcurrency <= 0 {
+		errs = append(errs, errors.New("invalid Agent executor limits"))
+	}
+	if agent.MaxModelSteps < 3 || agent.MaxModelSteps > 6 {
+		errs = append(errs, errors.New("AGENT_MAX_MODEL_STEPS must be between 3 and 6"))
+	}
+	if agent.MaxConcurrency > c.Worker.Capacity {
+		errs = append(errs, errors.New("AGENT_MAX_CONCURRENCY cannot exceed WORKER_CAPACITY"))
+	}
+	return errs
 }
 
 func (c Config) validateLLM() []error {
@@ -276,9 +352,6 @@ func (c Config) validateLLM() []error {
 	}
 	if llm.RequestTimeout <= 0 || llm.DialTimeout <= 0 || llm.TLSHandshakeTimeout <= 0 || llm.MaxPromptBytes <= 0 || llm.MaxResponseBytes <= 0 || llm.MaxOutputTokens <= 0 || llm.MaxConcurrency <= 0 {
 		errs = append(errs, errors.New("invalid LLM executor limits"))
-	}
-	if llm.MaxConcurrency > c.Worker.Capacity {
-		errs = append(errs, errors.New("LLM_MAX_CONCURRENCY cannot exceed WORKER_CAPACITY"))
 	}
 	if llm.ToolCallingEnabled {
 		errs = append(errs, errors.New("LLM tool calling is not available in the reliable executor baseline"))

@@ -34,6 +34,10 @@ func TestMigrationsFromEmptyDatabase(t *testing.T) {
 	if count != 3 {
 		t.Fatalf("expected core indexes, got %d", count)
 	}
+	var agentTable string
+	if err := conn.QueryRow(ctx, `SELECT to_regclass('public.agent_steps')::text`).Scan(&agentTable); err != nil || agentTable != "agent_steps" {
+		t.Fatalf("agent_steps migration missing: table=%q err=%v", agentTable, err)
+	}
 	_, err = conn.Exec(ctx, `INSERT INTO projects(id,name,status,task_quota,max_concurrent_tasks,created_at,updated_at) VALUES(gen_random_uuid(),'bad','UNKNOWN',0,1,now(),now())`)
 	if err == nil {
 		t.Fatal("project status constraint accepted invalid value")

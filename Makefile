@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-integration test-llm-executor test-mysql-foundation test-mysql-lab test-mysql-concurrency report-mysql-explain smoke-phase5 smoke-llm demo verify lint fmt tools proto compose-up compose-down migrate-up migrate-down run-server
+.PHONY: build test test-race test-integration test-llm-executor test-agent test-mysql-foundation test-mysql-lab test-mysql-concurrency report-mysql-explain smoke-phase5 smoke-llm smoke-agent-eval demo verify lint fmt tools proto compose-up compose-down migrate-up migrate-down run-server
 
 GO ?= go
 COMPOSE := docker compose -f deploy/docker-compose.yml
@@ -17,6 +17,12 @@ test-integration:
 
 test-llm-executor:
 	$(GO) test -race -count=1 ./internal/config ./internal/executor/llm ./internal/worker ./scripts
+
+test-agent:
+	$(GO) test -race -count=1 ./internal/executor/agent ./internal/eval/gateway ./internal/api ./internal/pgstore
+
+smoke-agent-eval:
+	$(GO) run ./cmd/orbit-agent-eval -fake-provider=true -repository ../gateway-system
 
 test-mysql-foundation:
 	cd experiments/mysql8 && $(GO) test -count=1 ./...
@@ -39,7 +45,7 @@ smoke-llm:
 demo:
 	./scripts/demo.sh
 
-verify: lint test-race build test-integration smoke-phase5 test-llm-executor smoke-llm test-mysql-lab test-mysql-concurrency
+verify: lint test-race build test-integration smoke-phase5 test-llm-executor smoke-llm test-agent smoke-agent-eval test-mysql-lab test-mysql-concurrency
 
 lint:
 	$(GO) vet ./...

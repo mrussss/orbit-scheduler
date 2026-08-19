@@ -95,6 +95,16 @@ func (c *Client) SetDraining(ctx context.Context, id uuid.UUID, draining bool) e
 	_, err := c.rpc.SetDraining(ctx, &workerv1.SetDrainingRequest{WorkerInstanceId: id.String(), Draining: draining})
 	return classify(err)
 }
+
+func (c *Client) RecordAgentStep(ctx context.Context, request scheduler.RecordAgentStepRequest) error {
+	wire := &workerv1.RecordAgentStepRequest{TaskId: request.TaskID.String(), WorkerInstanceId: request.WorkerInstanceID.String(), AttemptNo: int32(request.AttemptNo), StepNo: int32(request.StepNo), Kind: string(request.Kind), ToolName: request.ToolName, InputSummaryJson: request.InputSummary, OutputSummaryJson: request.OutputSummary, Status: string(request.Status), StartedAtUnixMs: request.StartedAt.UnixMilli()}
+	if request.FinishedAt != nil {
+		finished := request.FinishedAt.UnixMilli()
+		wire.FinishedAtUnixMs = &finished
+	}
+	_, err := c.rpc.RecordAgentStep(ctx, wire)
+	return classify(err)
+}
 func outcomeProto(value domain.TaskOutcome) workerv1.TaskOutcome {
 	mapping := map[domain.TaskOutcome]workerv1.TaskOutcome{domain.OutcomeSucceeded: workerv1.TaskOutcome_TASK_OUTCOME_SUCCEEDED, domain.OutcomeRetryableFailure: workerv1.TaskOutcome_TASK_OUTCOME_RETRYABLE_FAILURE, domain.OutcomePermanentFailure: workerv1.TaskOutcome_TASK_OUTCOME_PERMANENT_FAILURE, domain.OutcomeTimeout: workerv1.TaskOutcome_TASK_OUTCOME_TIMEOUT, domain.OutcomeCanceled: workerv1.TaskOutcome_TASK_OUTCOME_CANCELED}
 	return mapping[value]
