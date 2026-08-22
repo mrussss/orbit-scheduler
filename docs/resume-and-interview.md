@@ -10,8 +10,8 @@
 技术栈：Go、Gin、GORM、pgx、PostgreSQL、gRPC、Prometheus、
 OpenAI-compatible API、Testcontainers、MySQL 8（独立实验模块）
 
-下面的 LLM 描述适用于 `v0.2.0` 候选实现；只有 PostgreSQL、LLM Smoke、
-Race、Build 和 MySQL 全部门禁通过并形成发布记录后，才应作为已发布能力使用。
+下面的描述适用于 `v0.3.0` 候选实现；只有 PostgreSQL、LLM/Agent Smoke、
+Race、Build、Gateway Eval 和 MySQL 全部门禁通过并形成发布记录后，才应作为已发布能力使用。
 
 ## 推荐简历描述
 
@@ -134,11 +134,9 @@ API Key 只从 Worker 环境读取，由 Provider 注入 Authorization。Payload
 解码，不能包含 API Key、Base URL 或 Header；自动重定向被禁用，Provider 错误
 不复制响应体，日志和指标也不记录密钥、Prompt 或 Response。
 
-### 为什么第一版不做 Streaming、RAG、MCP 和 Tool Calling？
+### 为什么 v0.3 Agent 只做只读源码诊断工具，不做写工具、RAG、MCP 或 Multi-Agent？
 
-第一版目标是把一次不可靠的外部模型调用纳入可靠调度语义。Streaming 会引入
-部分结果恢复，RAG/MCP/Agent 会扩大数据和权限边界，Tool Calling 需要独立工具
-白名单、Schema、轮数、超时和审计。它们不能在基础执行链路未稳定时混入。
+Agent 的目标是验证只读排查场景与权威 Trace/SSE 的调度一致性。写工具和自动修改涉及破坏性副作用与复杂回滚，RAG/MCP/Multi-Agent 会大幅扩大权限与外部数据边界。当前版本严格限定为 3 个只读工具（`search_code`、`read_file`、`read_docs`），以保持执行语义和安全边界清晰受控。
 
 ### Token 和成本指标如何避免高基数？
 
@@ -151,7 +149,7 @@ Label。成本按配置费率用整数 microunit 计算；没有费率时只记�
 - “Orbit 同时支持 PostgreSQL 和 MySQL 生产运行”。
 - “实现了 Exactly-once 任务执行”。
 - “Kafka Relay、Audit Consumer 和 DLQ 已完成”。
-- “实现了 Tool Calling、RAG、MCP 或多 Agent 工作流”。
+- “实现了写工具、代码自动修改、RAG、MCP 或多 Agent 协作工作流”（只读诊断 Agent 仅实现了受限的 3 个只读 Tool Calling）。
 - “Fencing 保证模型调用或模型计费 Exactly-once”。
 - “支持公网安全的 gRPC 接入”。
 - “达到某个 QPS、可用性或生产规模”，除非以后有对应环境、原始数据和报告。
